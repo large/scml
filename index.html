@@ -233,6 +233,20 @@
   <section id="timelinePanel">
     <div id="timelineHeader">
       <div class="tl-tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Timeline</div>
+      <div class="tl-legend" id="tlLegend">
+        <button class="tl-legend-btn" id="tlLegendBtn" type="button" title="What do these markers mean?"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> Legend</button>
+        <div class="tl-legend-pop" id="tlLegendPop">
+          <p>Each row is one bone or sprite's <em>own</em> timeline. Its diamonds are that part's own keyframes — a pose at one instant. Between two consecutive keys on the same row, the part blends from the left key's pose to the right key's pose; rows are independent, so different parts key at different times.</p>
+          <h4>Marker shape = how it blends into the next key</h4>
+          <div class="tl-legend-row"><span class="tl-legend-mark"><span></span></span> Linear — steady blend</div>
+          <div class="tl-legend-row"><span class="tl-legend-mark eased"><span></span></span> Eased — quadratic/cubic curve</div>
+          <div class="tl-legend-row"><span class="tl-legend-mark instant"><span></span></span> Hold — snaps, no blend until the next key</div>
+          <div class="tl-legend-row"><span class="tl-legend-mark swap"><span></span></span> Sprite swap — the image changes here, not just its position</div>
+          <h4>Row color &amp; state</h4>
+          <div class="tl-legend-row"><span class="tl-legend-mark bonecolor"><span></span></span> Pink = bone · Blue = sprite</div>
+          <div class="tl-legend-row"><span class="tl-legend-mark dim"><span></span></span> Dimmed = exists in the rig, but not part of the pose at the playhead</div>
+        </div>
+      </div>
       <div class="tl-info">
         <span id="tlTimecode">00:00:000</span>
         <span class="divider">/</span>

@@ -246,7 +246,10 @@ function applyParentTransform(child, parent) {
   return {
     x: wx, y: wy, angle: angle,
     scaleX: child.scaleX * parent.scaleX,
-    scaleY: child.scaleY * parent.scaleY
+    scaleY: child.scaleY * parent.scaleY,
+    // Spec (unmapFromParent): alpha multiplies down the parent chain, so a
+    // fading bone fades everything attached to it too.
+    alpha: (child.alpha === undefined ? 1 : child.alpha) * (parent.alpha === undefined ? 1 : parent.alpha)
   };
 }
 
@@ -317,7 +320,10 @@ function applyCorrection(world, c) {
     angle: ((world.angle + (c.dAngle || 0)) % 360 + 360) % 360,
     scaleX: world.scaleX * (c.dsx === undefined ? 1 : c.dsx),
     scaleY: world.scaleY * (c.dsy === undefined ? 1 : c.dsy),
-    shear: (world.shear || 0) + (c.dshear || 0)
+    shear: (world.shear || 0) + (c.dshear || 0),
+    // No user-editable alpha correction (not exposed in the edit UI) -- just
+    // carry the authored opacity through so it isn't dropped by this rebuild.
+    alpha: world.alpha === undefined ? 1 : world.alpha
   };
 }
 
@@ -363,6 +369,7 @@ function getTimelineValueAt(timeline, refKeyIndex, timeMs, animLength, looping) 
     angle: lerpAngle(a.angle, b.angle, f, keyA.spin === undefined ? 1 : keyA.spin),
     scaleX: lerp(a.scaleX, b.scaleX, f),
     scaleY: lerp(a.scaleY, b.scaleY, f),
+    alpha: lerp(a.alpha === undefined ? 1 : a.alpha, b.alpha === undefined ? 1 : b.alpha, f),
     folder: keyA.folder, file: keyA.file
   };
 }
@@ -663,11 +670,13 @@ function paintSprites(pctx, objects, viewScale, originX, originY, opts = {}, ani
     const ax = cos * wtx.scaleX * viewScale, ay = -sin * wtx.scaleX * viewScale;
     const bx = sin * wtx.scaleY * viewScale, by = cos * wtx.scaleY * viewScale;
     const [ex, ey] = worldToLocal(wtx.x, wtx.y, originX, originY, viewScale);
-    // Decide dim state
+    // Decide dim state, folded together with the sprite's own authored
+    // opacity (SCML <object a="..."> keys -- fade in/out), if any.
     const isActive = !dimInactive || (opts.activeObjectIds ? opts.activeObjectIds.has(obj.id) : true);
-    const alpha = isActive ? 1 : 0.25;
+    const dimAlpha = isActive ? 1 : 0.25;
+    const ownAlpha = wtx.alpha === undefined ? 1 : wtx.alpha;
     pctx.save();
-    pctx.globalAlpha = alpha;
+    pctx.globalAlpha = dimAlpha * ownAlpha;
     pctx.setTransform(ax, ay, bx, by, ex, ey);
     // Skew is composed as a *separate* transform on top of the already-verified
     // rotation/scale matrix above, rather than folded into ax/bx by hand -- that's
@@ -776,6 +785,16 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
       const [x0, y0] = worldToCanvas(w.x, w.y);
       const isSel = selKey() === 'bones:' + br.id;
       const isActive = _activeBones.has(br.id);
+      // Bookkeeping (world position, pivot for the edit panel/toolbar) is kept
+      // regardless of visibility -- same as objects below -- so a hidden bone
+      // can still be selected/edited via the timeline row or state inspector.
+      lastWorldById['bones:' + br.id] = w;
+      lastPivotById['bones:' + br.id] = [x0, y0];
+      // Hidden via the timeline eye toggle: skip drawing the point/line/label
+      // entirely, same treatment sprites already get (previously only sprites
+      // respected trackVisible here, so a "hidden" bone still showed on canvas).
+      const isVisible = trackVisible['bones:' + br.id] !== false;
+      if (!isVisible) continue;
       // Dim bones (and their lines/labels) that aren't active at this frame
       ctx.save();
       ctx.globalAlpha = isActive ? 1 : 0.25;
@@ -790,15 +809,15 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
       }
       ctx.fillStyle = isSel ? '#ffd479' : '#ff5577';
       ctx.beginPath(); ctx.arc(x0, y0, isSel ? 6 : 4, 0, 7); ctx.fill();
-      if (br.parent !== null) {
+      // Only draw the line to the parent if the parent bone is visible too --
+      // otherwise it points at a bone point that was never drawn.
+      if (br.parent !== null && trackVisible['bones:' + br.parent] !== false) {
         const p = boneWorld[br.parent];
         const [x1, y1] = worldToCanvas(p.x, p.y);
         ctx.strokeStyle = '#54e0c0';
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
       }
       lastBonePoints.push({ id: br.id, x: x0, y: y0 });
-      lastWorldById['bones:' + br.id] = w;
-      lastPivotById['bones:' + br.id] = [x0, y0];
       if (document.getElementById('showLabels').checked) {
         _labelPositions.push({ name: entity.bones[br.id] || br.id, x: x0, y: y0, isActive });
       }
@@ -904,8 +923,8 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
 
   renderStateInspector(entity, boneRefs, objects, boneWorld);
   renderTree(entity, boneRefs, objects);
-  renderAssetManager(entity, boneRefs, objects);
-  renderTracker(entityIdx, entity, anim, timeMs, boneRefs, objects);
+  renderAssetManager(entity);
+  renderTracker(entityIdx, entity, anim, timeMs);
   positionFloatToolbar();
 }
 
@@ -953,44 +972,75 @@ function getTimelinePixelsPerMs() {
   return Math.max(0.4, Math.min(4, 1200 / currentAnim.length));
 }
 
-function renderTracker(entityIdx, entity, anim, timeMs, boneRefs, objects) {
+// Collects every bone_ref / object_ref that appears in ANY of the given
+// mainline keys, deduped by id (first occurrence, in mainline-key order,
+// wins as the representative ref used for parent/timeline/z_index lookup).
+//
+// Ref `id` numbers are only reliably stable for BONES: a given entity's
+// bone_ref id maps to the same named bone in every mainline key of every
+// animation (the skeleton's bone list doesn't change). For OBJECTS, Spriter
+// assigns ref ids by enumeration order *within each mainline key*, so if an
+// animation's object "cast" changes mid-animation (e.g. a weapon is drawn),
+// the same id can be recycled to mean a different sprite later in that same
+// animation. When that happens, this -- like the rest of the app's id-keyed
+// names/corrections/visibility -- reflects the id's FIRST appearance. That's
+// a quirk of the raw SCML format (confirmed against real exported data, not
+// a bug introduced here).
+function collectRefsAcrossKeys(mainlineKeys) {
+  const bones = new Map();   // id -> bone_ref
+  const objects = new Map(); // id -> object_ref
+  for (const mk of mainlineKeys) {
+    for (const br of mk.bone_refs) { if (!bones.has(br.id)) bones.set(br.id, br); }
+    for (const orf of mk.object_refs) { if (!objects.has(orf.id)) objects.set(orf.id, orf); }
+  }
+  return { bones, objects };
+}
+
+function renderTracker(entityIdx, entity, anim, timeMs) {
   const el = document.getElementById('trackerView');
   if (!el) return;
 
   const mkey = getMainlineKeys(anim, timeMs);
-  // Build active id sets for the current mainline key (used for dimming)
+  // Active id sets for the CURRENT mainline key -- used to dim rows/markers
+  // that exist in the rig but aren't part of the pose at this instant.
   const activeBoneIds = new Set(mkey.bone_refs.map(b => b.id));
   const activeObjectIds = new Set(mkey.object_refs.map(o => o.id));
-  // Build channels in tree order (depth-first) with depth for indentation
+
+  // Channel list spans every mainline key of the WHOLE animation, not just
+  // the current one -- so rows have a fixed identity for the duration of the
+  // animation and don't pop in/out of existence while scrubbing or playing.
+  // A bone/object that's only part of the cast for part of the animation
+  // (e.g. a muzzle flash, a drawn weapon) still gets a persistent row here,
+  // dimmed (via activeBoneIds/activeObjectIds above) for the time ranges
+  // it's not part of the current pose.
+  const refs = collectRefsAcrossKeys(anim.mainline);
   const channels = [];
   const objByParent = {};
-  for (const orf of mkey.object_refs) {
+  for (const orf of refs.objects.values()) {
     const p = orf.parent === null ? 'root' : orf.parent;
     (objByParent[p] = objByParent[p] || []).push(orf.id);
   }
   // Sort objects by z_index (draw order) within each parent
   for (const k of Object.keys(objByParent)) {
     objByParent[k].sort((a, b) => {
-      const oa = mkey.object_refs.find(o => o.id === a);
-      const ob = mkey.object_refs.find(o => o.id === b);
+      const oa = refs.objects.get(a), ob = refs.objects.get(b);
       return (oa ? oa.z_index : 0) - (ob ? ob.z_index : 0);
     });
   }
   const boneChildren = {};
-  for (const br of boneRefs) {
+  for (const br of refs.bones.values()) {
     const p = br.parent === null ? 'root' : br.parent;
     (boneChildren[p] = boneChildren[p] || []).push(br);
   }
-  // Pre-compute which bones have children or sprites
-  const boneHasContent = {};
-  for (const br of boneRefs) {
-    const childBones = boneChildren[br.id] || [];
-    const childSprites = objByParent[br.id] || [];
-    boneHasContent[br.id] = childBones.length > 0 || childSprites.length > 0;
-  }
-  function walkChannel(parentKey, depth) {
+  function walkChannel(parentKey, depth, seen) {
     const children = boneChildren[parentKey] || [];
     for (const br of children) {
+      // Cycle guard: each bone's parent is taken from its first appearance,
+      // possibly a different mainline key than a sibling's -- a pathological
+      // file could in theory disagree across keys and form a cycle when
+      // unioned. Every mainline key on its own is always a valid tree.
+      if (seen.has(br.id)) continue;
+      seen.add(br.id);
       const sprites = objByParent[br.id] || [];
       const hasChildren = (boneChildren[br.id] || []).length > 0 || sprites.length > 0;
       channels.push({ kind: 'bones', id: br.id, name: nameFor('bones', br.id, entity), depth, hasChildren });
@@ -999,10 +1049,10 @@ function renderTracker(entityIdx, entity, anim, timeMs, boneRefs, objects) {
         channels.push({ kind: 'objects', id: oid, name: nameFor('objects', oid, entity), depth: depth + 1, hasChildren: false });
       }
       // Recurse into child bones
-      walkChannel(br.id, depth + 1);
+      walkChannel(br.id, depth + 1, seen);
     }
   }
-  walkChannel('root', 0);
+  walkChannel('root', 0, new Set());
   // Root-level sprites (parented to 'root')
   const rootSprites = objByParent['root'] || [];
   for (const oid of rootSprites) {
@@ -1045,19 +1095,40 @@ function renderTracker(entityIdx, entity, anim, timeMs, boneRefs, objects) {
     const isActive = c.kind === 'bones' ? activeBoneIds.has(c.id) : activeObjectIds.has(c.id);
     const dimClass = isActive ? '' : ' dim';
     const isVisible = trackVisible[visibleKey] !== false;
-    const refList = c.kind === 'bones' ? mkey.bone_refs : mkey.object_refs;
-    const ref = refList.find(r => r.id === c.id);
+    const ref = (c.kind === 'bones' ? refs.bones : refs.objects).get(c.id);
     const tl = ref ? anim.timelines[ref.timeline] : null;
     const keys = tl ? tl.keys : [];
 
+    // Marker shape encodes how this key blends into the NEXT key on this
+    // same row: diamond=linear, circle=eased (quadratic/cubic), flat=hold
+    // (instant -- snaps, no blend). A corner flag marks sprite-swap keys,
+    // where the image itself changes (not just position/rotation) -- see
+    // the Timeline legend popover for the same language, spelled out.
     let markers = '';
+    let prevFolderFile = null;
     for (const k of keys) {
       const x = (k.time / anim.length) * laneW;
-      const isInstant = String(k.curve_type === undefined ? '0' : k.curve_type) === '1';
+      const curveType = String(k.curve_type === undefined ? '0' : k.curve_type);
+      const isInstant = curveType === '1' || /instant/i.test(curveType);
+      const isCubic = curveType === '3' || /cubic/i.test(curveType);
+      const isEased = !isInstant && (isCubic || curveType === '2' || /quad/i.test(curveType));
+      const curveLabel = isInstant ? 'hold (instant)' : isEased ? (isCubic ? 'cubic ease' : 'quadratic ease') : 'linear';
+      // Sprite-swap detection: does this key point at a different image than
+      // the previous key on this SAME timeline? (object timelines only --
+      // bones have no folder/file.)
+      const folderFile = (c.kind === 'objects' && k.folder !== null && k.folder !== undefined) ? (k.folder + '_' + k.file) : null;
+      const isSwap = folderFile !== null && prevFolderFile !== null && folderFile !== prevFolderFile;
+      if (folderFile !== null) prevFolderFile = folderFile;
+      let swapLabel = '';
+      if (isSwap) {
+        const finfo = folders[k.folder] && folders[k.folder].files[k.file];
+        swapLabel = ' · sprite → ' + (finfo ? finfo.name.split('/').pop() : (k.folder + '/' + k.file));
+      }
       markers += '<div class="keyframe kind-' + (c.kind === 'bones' ? 'bone' : 'sprite') +
-                 (isInstant ? ' instant' : '') +
+                 (isInstant ? ' instant' : isEased ? ' eased' : '') +
+                 (isSwap ? ' swap' : '') +
                  '" data-kind="' + c.kind + '" data-id="' + c.id + '" data-time="' + k.time +
-                 '" data-jump-time="' + k.time + '" style="left:' + x + 'px;" title="t=' + Math.round(k.time) + 'ms"></div>';
+                 '" data-jump-time="' + k.time + '" style="left:' + x + 'px;" title="t=' + Math.round(k.time) + 'ms · ' + curveLabel + swapLabel + '"></div>';
     }
 
     const isBone = c.kind === 'bones';
@@ -1248,6 +1319,23 @@ function applyTimelineHeaderWidth() {
   });
 })();
 
+// ---------- timeline legend popover (explains the keyframe marker shapes) ----------
+(function initTimelineLegend() {
+  const wrap = document.getElementById('tlLegend');
+  const btn = document.getElementById('tlLegendBtn');
+  if (!wrap || !btn) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    wrap.classList.toggle('show');
+  });
+  document.addEventListener('click', (e) => {
+    if (wrap.classList.contains('show') && !wrap.contains(e.target)) wrap.classList.remove('show');
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') wrap.classList.remove('show');
+  });
+})();
+
 function updatePlayhead(laneW, anim) {
   const ph = document.getElementById('playhead');
   if (!ph) return;
@@ -1365,15 +1453,39 @@ function onRulerMouseDown(e) {
 
 
 // ---------- asset manager (renameable list of every bone/sprite for this entity) ----------
-function renderAssetManager(entity, boneRefs, objects) {
-  // Populates the asset-manager POPUP grid (sprites only). Cheap to keep up to date
-  // on every render since it only touches DOM when the modal is actually open.
-  const modal = document.getElementById('assetManagerModal');
-  if (!modal.classList.contains('show')) { lastAssetManagerObjects = objects; return; }
-  renderAssetGrid(entity, objects);
+// Builds a stable "every sprite this skin ever uses" roster, spanning every
+// mainline key of every animation on the entity -- independent of the
+// current animation/frame. Previously the Asset Manager rebuilt its grid
+// from whatever was on screen at the current instant (computeFrame's output
+// for the live playhead), so cards would appear, disappear, and re-thumbnail
+// continuously while the animation played -- that's the "modifications
+// during playback" behavior. A sprite's identity here is its object_ref id,
+// which is stable for the whole entity as long as it never leaves an
+// animation's cast (see collectRefsAcrossKeys for the one known exception:
+// animations whose object cast changes mid-animation, e.g. drawing a
+// weapon, can recycle ids -- rare in practice, and no worse than before).
+function buildEntityObjectRoster(entity) {
+  const byId = new Map(); // id -> { id, folder, file }
+  for (const anim of entity.animations) {
+    const { objects: objRefs } = collectRefsAcrossKeys(anim.mainline);
+    for (const orf of objRefs.values()) {
+      if (byId.has(orf.id)) continue;
+      const tl = anim.timelines[orf.timeline];
+      const key = tl && (tl.keys.find(k => k.id === orf.key) || tl.keys[0]);
+      byId.set(orf.id, { id: orf.id, folder: key ? key.folder : null, file: key ? key.file : null });
+    }
+  }
+  return [...byId.values()];
 }
 
-let lastAssetManagerObjects = [];
+function renderAssetManager(entity) {
+  // Populates the asset-manager POPUP grid (sprites only). Only touches the
+  // DOM when the modal is actually open -- the roster itself no longer
+  // depends on the current frame, so there's nothing to refresh per-frame.
+  const modal = document.getElementById('assetManagerModal');
+  if (!modal.classList.contains('show')) return;
+  renderAssetGrid(entity, buildEntityObjectRoster(entity));
+}
 
 function renderAssetGrid(entity, objects) {
   const el = document.getElementById('assetGrid');
@@ -1390,7 +1502,7 @@ function renderAssetGrid(entity, objects) {
       <div class="slot-id">sprite #${obj.id}${cur !== defaultNameFor('objects', obj.id, entity) ? '' : ' (unnamed)'}</div>
     </div>`;
   }
-  el.innerHTML = html || '<div class="hint">No sprites in the current frame.</div>';
+  el.innerHTML = html || '<div class="hint">No sprites found for this skin.</div>';
   el.querySelectorAll('input[type=text]').forEach(inp => {
     inp.addEventListener('change', () => {
       pushUndo();
@@ -1509,7 +1621,7 @@ function applyBackdrop() {
 })();
 
 document.getElementById('tmAssets').addEventListener('click', () => {
-  renderAssetGrid(currentEntity, lastAssetManagerObjects);
+  renderAssetGrid(currentEntity, buildEntityObjectRoster(currentEntity));
   document.getElementById('assetManagerModal').classList.add('show');
 });
 document.getElementById('closeAssetManager').addEventListener('click', () => {
@@ -2736,7 +2848,11 @@ function parseSCML(xmlText) {
           kk.transform = {
             x: parseFloat(el.getAttribute('x') || 0), y: parseFloat(el.getAttribute('y') || 0),
             angle: parseFloat(el.getAttribute('angle') || 0),
-            scaleX: parseFloat(el.getAttribute('scale_x') || 1), scaleY: parseFloat(el.getAttribute('scale_y') || 1)
+            scaleX: parseFloat(el.getAttribute('scale_x') || 1), scaleY: parseFloat(el.getAttribute('scale_y') || 1),
+            // Spec: SpatialInfo.a (opacity), default 1 -- used for fade in/out keys.
+            // Named `alpha` (not `a`) to avoid clashing with the `a`/`b` key-pair
+            // locals used throughout the interpolation code below.
+            alpha: el.getAttribute('a') !== null ? parseFloat(el.getAttribute('a')) : 1
           };
           kk.folder = objEl ? objEl.getAttribute('folder') : null;
           kk.file = objEl ? objEl.getAttribute('file') : null;
