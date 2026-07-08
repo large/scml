@@ -183,7 +183,7 @@ that, which is why it's more trustworthy than the raw id shown in "sprite
 
 ## Can I build an animation from scratch here?
 
-**Partially, today.** What works, tested end-to-end:
+**Mostly, today.** What works, tested end-to-end:
 
 - **"+ Animation"** clones an existing animation (its full timeline set,
   every bone and sprite it uses) as a starting point. From there you can
@@ -193,30 +193,35 @@ that, which is why it's more trustworthy than the raw id shown in "sprite
   existing skeleton + cast rather than a blank canvas.
 - Within that clone, **"This keyframe"** edits let you adjust any *existing*
   keyframe's authored pose directly, per the section above.
+- **"Insert keyframe here"** adds a brand-new key to the selected item's
+  timeline at the current playhead time, seeded with its live interpolated
+  pose (so inserting is a no-op visually — the point is to give you a real
+  key to then re-pose via "This keyframe"). It correctly re-indexes every
+  mainline ref across the whole animation that points at the same timeline,
+  since SCML's `ref.key` is a raw array index into `timeline.keys[]`, not an
+  id lookup — verified by fingerprinting every bone/object's pose at every
+  sampled time across the whole animation before and after an insert, on an
+  animation with real cast changes and id-recycling, with zero unexpected
+  changes outside the edited item's own local time window.
+- **"Change image…"** on an on-keyframe sprite opens a picker over every raw
+  PNG in the project — including ones no Spriter-authored sprite currently
+  uses — and reassigns that keyframe to point at it directly.
 - You can retime the loop start, recolor sprites, reorder draw layers, and
   rename everything as you go.
 
-What's **not** possible through the UI yet, confirmed by testing (not just
-reading the code):
+What's **still not** possible through the UI, confirmed by testing:
 
 - **No way to add a new bone.** The skeleton is fixed to whatever
   `obj_info` declared for the entity.
 - **No way to add a new sprite slot** — there's no "attach this PNG to
-  this bone" control anywhere, including for the 3 currently-unused raw
-  PNGs surfaced by the Raw assets tab above.
-- **No way to insert a brand-new keyframe.** You can only edit keyframes
-  that already exist in the source animation you cloned from; there's no
-  "+" on the Timeline panel and no context menu for it (checked).
-  Practically, this means you can *re-time and re-pose* an existing
-  choreography, but you can't add an extra beat to it.
-- **No way to change which image an existing keyframe shows.** Sprite-swap
-  keys (section above) are baked into the source data; there's no picker to
-  point a keyframe at a different raw PNG.
+  this bone" control that introduces a timeline the mainline doesn't
+  already reference; you can retarget an *existing* keyframe's image (above),
+  but not add a wholly new object/bone to the cast.
 
-Put together: this editor is a **correction and re-posing tool for an
-existing Spriter rig**, not a rig-authoring tool. To add genuinely new
-bones, new sprite slots, or new keyframes, the underlying `.scml` needs to
-be edited in Spriter Pro (or by hand/script) first, then loaded here (File
-→ Project → "Load a different SCML project") for fine-tuning. Ask if it'd
-help to have "insert keyframe" and "assign image to a keyframe" added —
-they're a well-scoped follow-up on top of everything above, not a rewrite.
+Put together: this editor is now a **re-posing and re-timing tool for an
+existing Spriter rig's cast**, not a rig-authoring tool — you can insert,
+re-pose, and re-image any beat of a cloned animation, but you can't grow
+the skeleton or the sprite roster itself. To add genuinely new bones or
+sprite slots, the underlying `.scml` still needs to be edited in Spriter
+Pro (or by hand/script) first, then loaded here (File → Project → "Load a
+different SCML project") for fine-tuning.
