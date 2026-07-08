@@ -30,7 +30,7 @@
 
   <div id="mainBody">
     <aside id="leftPanel" class="panel">
-      <section class="panel-section" style="flex: 1 1 0; overflow-y: auto;">
+      <section class="panel-section" id="secProject">
         <div class="panel-header"><span>Project</span></div>
         <div class="panel-body">
           <div class="field-row">
@@ -43,7 +43,8 @@
           </div>
         </div>
       </section>
-      <section class="panel-section">
+      <div class="v-resize-handle" id="rzProject" title="Drag to resize"></div>
+      <section class="panel-section" id="secView">
         <div class="panel-header"><span>View</span></div>
         <div class="panel-body">
           <label class="toggle-row">
@@ -70,7 +71,23 @@
           </div>
         </div>
       </section>
-      <section class="panel-section">
+      <div class="v-resize-handle" id="rzView" title="Drag to resize"></div>
+      <section class="panel-section" id="secLoopStart">
+        <div class="panel-header"><span>Loop start</span></div>
+        <div class="panel-body">
+          <div class="hint">Set where this animation's loop begins (e.g. idle→walk reads best starting 200ms into "walk").</div>
+          <div class="field-row">
+            <span class="label">ms</span>
+            <input type="number" id="startOffsetInput" value="0" min="0" step="10" style="flex:1;">
+          </div>
+          <div class="btn-group">
+            <button class="btn subtle" id="useCurrentAsStart">Use current</button>
+            <button class="btn subtle" id="resetStartOffset">Reset to 0</button>
+          </div>
+        </div>
+      </section>
+      <div class="v-resize-handle" id="rzLoopStart" title="Drag to resize"></div>
+      <section class="panel-section" id="secDrawOrder" style="flex: 1 1 0; min-height: 0;">
         <div class="panel-header"><span>Draw order</span></div>
         <div class="panel-body">
           <div class="hint" id="drawOrderHint" style="margin-top:0;">Select a sprite in the timeline to reorder draw layers.</div>
@@ -83,6 +100,8 @@
         </div>
       </section>
     </aside>
+
+    <div class="h-resize-handle" id="rzLeftPanel" title="Drag to resize"></div>
 
     <main id="centerPanel">
       <section id="previewArea" style="grid-row: 1 / -1;">
@@ -168,8 +187,10 @@
       </section>
     </main>
 
+    <div class="h-resize-handle" id="rzRightPanel" title="Drag to resize"></div>
+
     <aside id="rightPanel" class="panel">
-      <section class="right-section">
+      <section class="right-section" id="secEdit">
         <div class="section-title">Edit</div>
         <div class="section-body">
           <button class="btn full primary" id="editToggle">Enable edit mode</button>
@@ -183,7 +204,8 @@
           <button class="btn full danger" id="clearEntityEdits">Clear all edits (this skin)</button>
         </div>
       </section>
-      <section class="right-section scroll">
+      <div class="v-resize-handle" id="rzEdit" title="Drag to resize"></div>
+      <section class="right-section" id="secSelectedItem">
         <div class="section-title">Selected item</div>
         <div class="section-body">
           <div class="selected-item-card">
@@ -193,18 +215,12 @@
               <div class="item-scope" id="selScope"></div>
             </div>
           </div>
-          <div class="transform-grid">
-            <div class="tf"><span class="lbl">x</span><input type="number" id="fDx2" step="1"></div>
-            <div class="tf"><span class="lbl">y</span><input type="number" id="fDy2" step="1"></div>
-            <div class="tf"><span class="lbl">angle</span><input type="number" id="fAngle2" step="1"></div>
-            <div class="tf"><span class="lbl">sx</span><input type="number" id="fSx2" step="0.01"></div>
-            <div class="tf"><span class="lbl">sy</span><input type="number" id="fSy2" step="0.01"></div>
-            <div class="tf"><span class="lbl">shear</span><input type="number" id="fShear2" step="1"></div>
-          </div>
-          <div class="hint">Edit the actual world position of the selected bone or sprite (relative to the size-box / stage). The editor computes the delta from the keyframe base and applies it as a correction. Drag on the canvas to move, drag the yellow handle to rotate, drag the green handle to scale. Arrow keys nudge by 1px (Shift = 10px).</div>
+          <div id="editFieldsWrap"></div>
+          <div class="hint" id="editFieldsHint"></div>
         </div>
       </section>
-      <section class="right-section flex-fill">
+      <div class="v-resize-handle" id="rzSelectedItem" title="Drag to resize"></div>
+      <section class="right-section flex-fill" id="secCurrentState">
         <div class="section-title">
           <span>Current state</span>
           <span style="font-size:10px;color:var(--text-muted);text-transform:none;letter-spacing:0;">live values at t</span>
@@ -213,22 +229,10 @@
           <div id="stateInspector" class="state-inspector"></div>
         </div>
       </section>
-      <section class="right-section">
-        <div class="section-title">Loop start</div>
-        <div class="section-body">
-          <div class="hint">Set where this animation's loop begins (e.g. idle→walk reads best starting 200ms into "walk").</div>
-          <div class="field-row">
-            <span class="label">ms</span>
-            <input type="number" id="startOffsetInput" value="0" min="0" step="10" style="flex:1;">
-          </div>
-          <div class="btn-group">
-            <button class="btn subtle" id="useCurrentAsStart">Use current</button>
-            <button class="btn subtle" id="resetStartOffset">Reset to 0</button>
-          </div>
-        </div>
-      </section>
     </aside>
   </div>
+
+  <div class="v-resize-handle full-width" id="rzTimeline" title="Drag to resize"></div>
 
   <section id="timelinePanel">
     <div id="timelineHeader">

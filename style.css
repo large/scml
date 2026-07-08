@@ -80,9 +80,36 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 ::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
 ::-webkit-scrollbar-corner { background: var(--bg); }
 #app {
-  display: grid; grid-template-rows: var(--header-h) minmax(0, 1fr) var(--timeline-h);
+  display: grid; grid-template-rows: var(--header-h) minmax(0, 1fr) 6px var(--timeline-h);
   grid-template-columns: minmax(0, 1fr); height: 100%; background: var(--bg);
 }
+
+/* ---------- generic resize handles (panel sections, panel widths, timeline height) ---------- */
+.v-resize-handle {
+  height: 6px; flex: none; cursor: row-resize; position: relative; background: transparent;
+}
+.v-resize-handle::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 2px; height: 2px;
+  background: var(--border); transition: background 100ms;
+}
+.v-resize-handle:hover::after, .v-resize-handle.dragging::after {
+  top: 1px; height: 4px; background: var(--accent);
+}
+.v-resize-handle.full-width { grid-column: 1; }
+.h-resize-handle {
+  width: 6px; flex: none; cursor: col-resize; position: relative; background: transparent;
+}
+.h-resize-handle::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px;
+  background: var(--border); transition: background 100ms;
+}
+.h-resize-handle:hover::after, .h-resize-handle.dragging::after {
+  left: 1px; width: 4px; background: var(--accent);
+}
+/* Sections with a JS-managed explicit height need their own scroll, since
+   shrinking them below their content's natural height would otherwise
+   overflow into neighboring sections instead of clipping/scrolling. */
+#leftPanel > .panel-section, #rightPanel > .right-section { overflow-y: auto; }
 
 /* TOP BAR */
 #topBar {
@@ -125,7 +152,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .tb-icon-btn svg { width: 14px; height: 14px; }
 
 /* MAIN BODY */
-#mainBody { display: grid; grid-template-columns: 250px minmax(0, 1fr) 300px; min-height: 0; overflow: hidden; }
+#mainBody { display: grid; grid-template-columns: var(--left-panel-w, 250px) 6px minmax(0, 1fr) 6px var(--right-panel-w, 300px); min-height: 0; overflow: hidden; }
 .panel { background: var(--bg-panel); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .panel-section { display: flex; flex-direction: column; border-bottom: 1px solid var(--border); min-height: 0; flex: 0 0 auto; }
 .panel-section.scroll { overflow-y: auto; }
@@ -352,6 +379,20 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   text-align: right; outline: none; transition: border-color 120ms;
 }
 .transform-grid .tf input:focus { border-color: var(--accent); }
+.transform-grid .tf input[readonly] { color: var(--text-muted); border-style: dashed; cursor: default; }
+/* "Natural" keyframe fields vs. the "Override" correction layer -- see
+   renderEditFields() in app.js. */
+.edit-fields-section { margin-top: 4px; }
+.edit-fields-section:first-child { margin-top: 0; }
+.edit-fields-title {
+  font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary); margin-bottom: 6px; display: flex; align-items: baseline; gap: 6px;
+}
+.edit-fields-subtitle { font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-faint); }
+.edit-fields-section.override-section {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+}
+.edit-fields-section.override-section .tf input { color: var(--warn); }
 .toggle-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; padding: 4px 0; font-size: 11px; color: var(--text); cursor: pointer;
@@ -395,29 +436,14 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   font-family: var(--font-mono);
   font-size: 10px;
 }
-/* Right panel scrollable section — give it explicit flex sizing so it can shrink */
-#rightPanel > .right-section.scroll {
-  flex: 1 1 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-#rightPanel > .right-section.scroll > .section-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-/* Right panel sections that should flex to fill remaining space */
+/* Right panel's last section (Current state) absorbs whatever space is left
+   after the user-resizable sections above it (Edit, Selected item) take
+   their chosen heights -- see initResizablePanels() in app.js. */
 #rightPanel > .right-section.flex-fill {
   flex: 1 1 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-/* Selected item section caps at a comfortable size, current state takes the rest */
-#rightPanel > .right-section.scroll {
-  flex: 0 0 auto;
-  max-height: 40%;
 }
 .state-inspector .row {
   display: flex;
@@ -893,6 +919,18 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 }
 .asset-card .thumb-wrap img { max-width: 92%; max-height: 92%; object-fit: contain; }
 .asset-card .slot-id { font-size: 9px; color: var(--text-muted); margin-top: 4px; font-family: var(--font-mono); }
+/* Grouped PNG variants -- every image a sprite-swap timeline ever shows for
+   this slot, e.g. an open hand vs. a gripping hand. Shown as a small strip
+   under the main thumbnail so it's clear they're the same sprite. */
+.asset-card .thumb-variants {
+  display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; margin-top: 4px;
+}
+.asset-card .thumb-variants .variant-thumb {
+  width: 22px; height: 22px; background: #0e0e0e; border-radius: 2px;
+  border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.asset-card .thumb-variants .variant-thumb img { max-width: 88%; max-height: 88%; object-fit: contain; }
+.asset-card .variant-count { font-size: 9px; color: var(--text-muted); margin-top: 2px; }
 .asset-card input[type="text"] {
   width: 100%; box-sizing: border-box; margin-top: 4px;
   background: var(--bg-input); color: var(--text);

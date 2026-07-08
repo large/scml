@@ -289,7 +289,112 @@ function displayNameFor(kind, id) {
   const map = kind === 'bones' ? boneNames : objectNames;
   return map[id] || null;
 }
+
+// ---------- smart default names, derived from the SCML data itself ----------
+// Falls back to "sprite #N" / "bone_000" only when nothing better is
+// available. Computed once per entity and cached (invalidated by
+// invalidateSmartNames() whenever an entity's animations/timelines change,
+// e.g. cloning a new animation) since it scans every mainline key of every
+// animation. Never overrides a name the user set explicitly via the Asset
+// Manager or hierarchy panel -- see nameFor() below, which always checks
+// displayNameFor() first.
+const _smartNameCache = new WeakMap(); // entity -> { bones: {id:name}, objects: {id:name} }
+function invalidateSmartNames(entity) { _smartNameCache.delete(entity); }
+
+function baseNameFromVariants(timelineName, fileStems) {
+  if (timelineName) return timelineName;
+  const names = [...fileStems];
+  if (names.length === 0) return null;
+  if (names.length === 1) return names[0];
+  // Several different images used by the same slot (a sprite-swap timeline,
+  // e.g. foot_01/foot_02/foot_03) -- use their common stem, trimmed of any
+  // trailing separator left over from stripping the differing suffix.
+  let common = names[0];
+  for (const n of names.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < n.length && common[i] === n[i]) i++;
+    common = common.slice(0, i);
+  }
+  common = common.replace(/[_\-\s]+$/, '');
+  return common || names[0];
+}
+
+// Suffixes every member of a duplicate-name group with -1, -2, -3... --
+// starting from the FIRST occurrence, not just the second -- so two
+// distinct "foot" sprites become "foot-1"/"foot-2" rather than a bare
+// "foot" next to a "foot-2".
+function disambiguate(idToName) {
+  const groups = new Map();
+  for (const [id, name] of idToName) {
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(id);
+  }
+  const out = {};
+  for (const [name, ids] of groups) {
+    if (ids.length === 1) { out[ids[0]] = name; continue; }
+    ids.forEach((id, i) => { out[id] = name + '-' + (i + 1); });
+  }
+  return out;
+}
+
+function computeSmartDefaultNames(entity) {
+  // Pass 1: for every object id, gather its first-seen timeline name, every
+  // distinct image (filename stem) it's ever drawn with, and its first-seen
+  // parent bone -- scanning every mainline key of every animation, since a
+  // single animation's cast can be a subset of what the whole entity uses.
+  const objInfo = new Map(); // id -> { timelineName, fileStems:Set, parentBoneId }
+  for (const anim of entity.animations) {
+    for (const mk of anim.mainline) {
+      for (const orf of mk.object_refs) {
+        let info = objInfo.get(orf.id);
+        if (!info) { info = { timelineName: null, fileStems: new Set(), parentBoneId: orf.parent }; objInfo.set(orf.id, info); }
+        const tl = anim.timelines[orf.timeline];
+        if (!tl) continue;
+        if (!info.timelineName && tl.name) info.timelineName = tl.name;
+        for (const k of tl.keys) {
+          if (k.folder === null || k.folder === undefined) continue;
+          const finfo = folders[k.folder] && folders[k.folder].files[k.file];
+          if (finfo) info.fileStems.add(finfo.name.split('/').pop().replace(/\.[a-zA-Z0-9]+$/, ''));
+        }
+      }
+    }
+  }
+  const objBase = new Map();
+  for (const [id, info] of objInfo) objBase.set(id, baseNameFromVariants(info.timelineName, info.fileStems) || ('sprite #' + id));
+  const objects = disambiguate(objBase);
+
+  // Pass 2: a bone whose direct sprite children all resolve to the SAME base
+  // sprite name gets called "<name>-bone" (e.g. a bone that only ever holds
+  // the "foot" sprite becomes "foot-bone"). A bone with no sprite children,
+  // or children of different sprites, keeps its entity.bones[] name.
+  const boneChildBaseNames = new Map(); // boneId (string) -> Set(baseName)
+  for (const [id, info] of objInfo) {
+    if (info.parentBoneId === null || info.parentBoneId === undefined) continue;
+    const base = objBase.get(id);
+    const key = String(info.parentBoneId);
+    if (!boneChildBaseNames.has(key)) boneChildBaseNames.set(key, new Set());
+    boneChildBaseNames.get(key).add(base);
+  }
+  const boneBase = new Map();
+  (entity.bones || []).forEach((rawName, idx) => {
+    const kids = boneChildBaseNames.get(String(idx));
+    boneBase.set(String(idx), (kids && kids.size === 1) ? [...kids][0] + '-bone' : (rawName || ('bone ' + idx)));
+  });
+  const bones = disambiguate(boneBase);
+
+  return { bones, objects };
+}
+
+function getSmartNames(entity) {
+  let c = _smartNameCache.get(entity);
+  if (!c) { c = computeSmartDefaultNames(entity); _smartNameCache.set(entity, c); }
+  return c;
+}
+
 function defaultNameFor(kind, id, entity) {
+  const smart = getSmartNames(entity);
+  const map = kind === 'bones' ? smart.bones : smart.objects;
+  if (map[id]) return map[id];
   if (kind === 'bones') return entity.bones[id] || ('bone ' + id);
   return 'sprite #' + id;
 }
@@ -1464,14 +1569,29 @@ function onRulerMouseDown(e) {
 // animations whose object cast changes mid-animation, e.g. drawing a
 // weapon, can recycle ids -- rare in practice, and no worse than before).
 function buildEntityObjectRoster(entity) {
-  const byId = new Map(); // id -> { id, folder, file }
+  const byId = new Map(); // id -> { id, folder, file, variants: [{folder,file}] }
   for (const anim of entity.animations) {
     const { objects: objRefs } = collectRefsAcrossKeys(anim.mainline);
     for (const orf of objRefs.values()) {
-      if (byId.has(orf.id)) continue;
       const tl = anim.timelines[orf.timeline];
-      const key = tl && (tl.keys.find(k => k.id === orf.key) || tl.keys[0]);
-      byId.set(orf.id, { id: orf.id, folder: key ? key.folder : null, file: key ? key.file : null });
+      if (!byId.has(orf.id)) {
+        const repKey = tl && (tl.keys.find(k => k.id === orf.key) || tl.keys[0]);
+        byId.set(orf.id, { id: orf.id, folder: repKey ? repKey.folder : null, file: repKey ? repKey.file : null, variants: [] });
+      }
+      // Collect every distinct image (folder,file) this slot is EVER drawn
+      // with, across every key of every animation -- a sprite-swap timeline
+      // (e.g. a hand that swaps between an open and a gripping pose) shows
+      // up here as multiple variants under the same card, instead of only
+      // the one image that happened to be picked as the representative.
+      const entry = byId.get(orf.id);
+      if (tl) {
+        for (const k of tl.keys) {
+          if (k.folder === null || k.folder === undefined) continue;
+          if (!entry.variants.some(v => v.folder === k.folder && v.file === k.file)) {
+            entry.variants.push({ folder: k.folder, file: k.file });
+          }
+        }
+      }
     }
   }
   return [...byId.values()];
@@ -1495,10 +1615,26 @@ function renderAssetGrid(entity, objects) {
     seen.add(obj.id);
     const cur = nameFor('objects', obj.id, entity);
     const imgSrc = (obj.folder !== null && obj.folder !== undefined) ? images[obj.folder + '_' + obj.file] : '';
+    const isAutoNamed = cur === defaultNameFor('objects', obj.id, entity) && !displayNameFor('objects', obj.id);
+    // All PNGs this sprite slot ever swaps between, grouped under its one
+    // card -- the primary thumbnail above is just the first-seen variant.
+    const variants = obj.variants || [];
+    const others = variants.filter(v => !(v.folder === obj.folder && v.file === obj.file));
+    let variantsHtml = '';
+    if (others.length > 0) {
+      variantsHtml = '<div class="thumb-variants">' + others.map(v => {
+        const src = images[v.folder + '_' + v.file];
+        const finfo = folders[v.folder] && folders[v.folder].files[v.file];
+        const title = finfo ? finfo.name.split('/').pop() : '';
+        return `<div class="variant-thumb" title="${title.replace(/"/g, '&quot;')}">${src ? `<img src="${src}" alt="">` : ''}</div>`;
+      }).join('') + '</div>' +
+      `<div class="variant-count">${variants.length} image${variants.length === 1 ? '' : 's'} for this sprite</div>`;
+    }
     html += `<div class="asset-card">
       <div class="thumb-wrap">${imgSrc ? `<img src="${imgSrc}" alt="">` : '<span style="color:#556;font-size:10px;">no image</span>'}</div>
+      ${variantsHtml}
       <input type="text" value="${cur.replace(/"/g, '&quot;')}" data-id="${obj.id}">
-      <div class="slot-id">sprite #${obj.id}${cur !== defaultNameFor('objects', obj.id, entity) ? '' : ' (unnamed)'}</div>
+      <div class="slot-id">sprite #${obj.id}${isAutoNamed ? ' (auto)' : ''}</div>
     </div>`;
   }
   el.innerHTML = html || '<div class="hint">No sprites found for this skin.</div>';
@@ -1549,7 +1685,7 @@ document.getElementById('tmRedo').addEventListener('click', redo);
 document.getElementById('zoomSlider').addEventListener('input', (e) => {
   VIEW_SCALE = Number(e.target.value);
   document.getElementById('zoomLabel').textContent = Math.round(VIEW_SCALE * 100) + '%';
-  floatToolbarMoved = false;
+  floatToolbarUserOffset = null; // a raw-pixel nudge from before the zoom change wouldn't line up anymore
   render();
 });
 document.getElementById('speedSlider').addEventListener('input', (e) => {
@@ -2106,25 +2242,7 @@ function updateEditPanel() {
     bar.classList.remove('show-obj-fields');
   }
   
-  // Sync right-panel mirror — show ACTUAL world position (post-correction),
-  // not the delta. The actual value is the world position the user can see
-  // in the canvas; editing these fields will move the sprite/bone to that
-  // exact world coordinate.
-  const dx2 = document.getElementById('fDx2');
-  const dy2 = document.getElementById('fDy2');
-  const ang2 = document.getElementById('fAngle2');
-  const sx2 = document.getElementById('fSx2');
-  const sy2 = document.getElementById('fSy2');
-  const sh2 = document.getElementById('fShear2');
-  const world = lastWorldById[(selected.kind === 'objects' ? 'objects:' : 'bones:') + selected.id];
-  if (world) {
-    if (dx2) dx2.value = world.x.toFixed(1);
-    if (dy2) dy2.value = world.y.toFixed(1);
-    if (ang2) ang2.value = ((world.angle % 360 + 360) % 360).toFixed(1);
-    if (sx2) sx2.value = world.scaleX.toFixed(3);
-    if (sy2) sy2.value = world.scaleY.toFixed(3);
-    if (sh2) sh2.value = (world.shear || 0).toFixed(1);
-  }
+  renderEditFields();
   const selName = document.getElementById('selName');
   const selIcon = document.getElementById('selIcon');
   const selScope = document.getElementById('selScope');
@@ -2185,54 +2303,190 @@ Object.keys(_floatFieldMap).forEach(id => {
   });
 });
 
-// ---------- right-panel transform fields: show & edit ACTUAL world position ----------
-// The fields display the resolved world position of the selected bone/sprite
-// (i.e. the value the user sees in the canvas). Editing the field moves the
-// item to that exact world coordinate by computing the delta and folding it
-// into the correction layer.
-const _detailFieldMap = {
-  fDx2:   { key: 'x',      type: 'add'  },
-  fDy2:   { key: 'y',      type: 'add'  },
-  fAngle2:{ key: 'angle',  type: 'add'  },
-  fSx2:   { key: 'scaleX', type: 'mul'  },
-  fSy2:   { key: 'scaleY', type: 'mul'  },
-  fShear2:{ key: 'shear',  type: 'add'  }
-};
-function applyDetailFieldEdit(id, raw) {
-  if (!selected) return;
-  const meta = _detailFieldMap[id];
-  if (!meta) return;
-  const c = ensureCorrection(currentEntityIdx, selected.kind, selected.id, currentAnim.name, editScope);
-  const baseActual = lastWorldById[(selected.kind === 'objects' ? 'objects:' : 'bones:') + selected.id];
-  if (!baseActual) return;
-  const newVal = Number(raw);
-  if (isNaN(newVal)) return;
-  const oldActual = baseActual[meta.key];
-  if (meta.type === 'add') {
-    // Apply additive delta into the corresponding correction
-    if (meta.key === 'x') c.dx += (newVal - oldActual);
-    else if (meta.key === 'y') c.dy += (newVal - oldActual);
-    else if (meta.key === 'angle') c.dAngle += (newVal - oldActual);
-    else if (meta.key === 'shear') c.dshear = (c.dshear || 0) + (newVal - oldActual);
-  } else if (meta.type === 'mul') {
-    // Scale is multiplicative. dsx is a multiplier; new scale = old * dsx, so
-    // dsx = new / old. Fold the ratio into the existing dsx.
-    if (oldActual === 0) return;
-    if (meta.key === 'scaleX') c.dsx = (c.dsx || 1) * (newVal / oldActual);
-    else if (meta.key === 'scaleY') c.dsy = (c.dsy || 1) * (newVal / oldActual);
-  }
-  pushUndo();
-  render();
-  scheduleAutosave();
+// ---------- "natural" keyframe editing vs. the override/correction layer ----------
+// SCML keyframes store LOCAL x/y/angle/scale (relative to the parent bone).
+// When the playhead sits exactly on the selected item's own keyframe, those
+// are genuinely "natural, changeable" parameters: this section edits them
+// directly, converting the world-space numbers shown here (matching what
+// you see on screen) back to local space via the inverse of the same
+// parent-transform math used to render (worldToLocal* below), and writing
+// straight into that keyframe. Between keyframes there's no single key to
+// edit -- the pose is interpolated ("calculated"), so the fields go
+// read-only instead of silently creating an implicit edit. The existing
+// dx/dy/dAngle/dsx/dsy/dshear correction system is kept as an explicit
+// "Override": a flat delta applied on top of whatever the keyframe(s) say,
+// usable at any time regardless of keyframe alignment -- exactly what it
+// already did, just labeled for what it is instead of being the only path.
+
+// Inverse of applyParentTransform: given a WORLD x/y (or angle, or scale)
+// and the parent's current rendered (post-correction) world transform,
+// returns the LOCAL value that would produce it.
+function worldToLocalXY(worldX, worldY, parent) {
+  if (!parent) return [worldX, worldY];
+  const rad = toRad(parent.angle);
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const dx = worldX - parent.x, dy = worldY - parent.y;
+  const px = dx * cos + dy * sin;
+  const py = -dx * sin + dy * cos;
+  return [parent.scaleX ? px / parent.scaleX : 0, parent.scaleY ? py / parent.scaleY : 0];
 }
-Object.keys(_detailFieldMap).forEach(id => {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener('input', () => applyDetailFieldEdit(id, el.value));
-});
+function worldToLocalAngle(worldAngle, parent) {
+  if (!parent) return ((worldAngle % 360) + 360) % 360;
+  let a = worldAngle - parent.angle;
+  if (parent.scaleX * parent.scaleY < 0) a = -a;
+  return ((a % 360) + 360) % 360;
+}
+function worldToLocalScale(worldScale, parentScale) {
+  return parentScale ? worldScale / parentScale : worldScale;
+}
+
+// Finds the selected item's own ref/timeline/key at the current time, and
+// whether the playhead sits exactly on that key (vs. interpolating toward
+// the next one). Returns null if the item isn't part of the pose right now.
+function getSelectedKeyframeContext() {
+  if (!selected) return null;
+  const timeMs = normalizeAnimTime(currentAnim, t);
+  const mkey = getMainlineKeys(currentAnim, timeMs);
+  const refList = selected.kind === 'bones' ? mkey.bone_refs : mkey.object_refs;
+  const ref = refList.find(r => r.id === selected.id);
+  if (!ref) return null;
+  const timeline = currentAnim.timelines[ref.timeline];
+  if (!timeline) return null;
+  const keyIndex = Math.min(parseInt(ref.key, 10) || 0, timeline.keys.length - 1);
+  const key = timeline.keys[keyIndex];
+  const parentWorld = (ref.parent !== null && ref.parent !== undefined) ? lastWorldById['bones:' + ref.parent] : null;
+  return { ref, timeline, keyIndex, key, parentWorld, onKeyframe: !!key && Math.abs(key.time - timeMs) < 0.5 };
+}
+
+const _naturalFieldDefs = [
+  { id: 'nfX', label: 'x', step: 1 },
+  { id: 'nfY', label: 'y', step: 1 },
+  { id: 'nfAngle', label: 'angle', step: 1 },
+  { id: 'nfSx', label: 'sx', step: 0.01 },
+  { id: 'nfSy', label: 'sy', step: 0.01 },
+];
+const _overrideFieldDefs = [
+  { id: 'ofDx', label: 'x', ckey: 'dx', mult: false },
+  { id: 'ofDy', label: 'y', ckey: 'dy', mult: false },
+  { id: 'ofAngle', label: 'angle', ckey: 'dAngle', mult: false },
+  { id: 'ofSx', label: 'sx', ckey: 'dsx', mult: true },
+  { id: 'ofSy', label: 'sy', ckey: 'dsy', mult: true },
+  { id: 'ofShear', label: 'shear', ckey: 'dshear', mult: false },
+];
+
+function renderEditFields() {
+  const wrap = document.getElementById('editFieldsWrap');
+  const hintEl = document.getElementById('editFieldsHint');
+  if (!wrap) return;
+  if (!selected) { wrap.innerHTML = ''; if (hintEl) hintEl.textContent = ''; return; }
+
+  const ctx = getSelectedKeyframeContext();
+  const onKey = !!(ctx && ctx.onKeyframe);
+  const world = lastWorldById[(selected.kind === 'objects' ? 'objects:' : 'bones:') + selected.id];
+
+  let html = '<div class="edit-fields-section">';
+  html += '<div class="edit-fields-title">' + (onKey ? 'This keyframe' : 'Current pose (calculated)') + '</div>';
+  html += '<div class="transform-grid">';
+  for (const f of _naturalFieldDefs) {
+    html += `<div class="tf"><span class="lbl">${f.label}</span><input type="number" id="${f.id}" step="${f.step}"${onKey ? '' : ' readonly'}></div>`;
+  }
+  html += '</div></div>';
+  html += '<div class="edit-fields-section override-section">';
+  html += '<div class="edit-fields-title">Override <span class="edit-fields-subtitle">on top of the keyframe, applies everywhere</span></div>';
+  html += '<div class="transform-grid">';
+  for (const f of _overrideFieldDefs) {
+    html += `<div class="tf"><span class="lbl">${f.label}</span><input type="number" id="${f.id}" step="${f.mult ? 0.01 : 1}"></div>`;
+  }
+  html += '</div></div>';
+  wrap.innerHTML = html;
+
+  if (world) {
+    let nx, ny, na, nsx, nsy;
+    if (onKey) {
+      const rawLocal = ctx.key.transform;
+      const naturalWorld = ctx.parentWorld ? applyParentTransform(rawLocal, ctx.parentWorld) : { ...rawLocal };
+      nx = naturalWorld.x; ny = naturalWorld.y; na = naturalWorld.angle; nsx = naturalWorld.scaleX; nsy = naturalWorld.scaleY;
+    } else {
+      nx = world.x; ny = world.y; na = world.angle; nsx = world.scaleX; nsy = world.scaleY;
+    }
+    document.getElementById('nfX').value = nx.toFixed(1);
+    document.getElementById('nfY').value = ny.toFixed(1);
+    document.getElementById('nfAngle').value = ((na % 360 + 360) % 360).toFixed(1);
+    document.getElementById('nfSx').value = nsx.toFixed(3);
+    document.getElementById('nfSy').value = nsy.toFixed(3);
+  }
+  const c = ensureCorrection(currentEntityIdx, selected.kind, selected.id, currentAnim.name, editScope);
+  document.getElementById('ofDx').value = (c.dx || 0).toFixed(1);
+  document.getElementById('ofDy').value = (c.dy || 0).toFixed(1);
+  document.getElementById('ofAngle').value = (c.dAngle || 0).toFixed(1);
+  document.getElementById('ofSx').value = (c.dsx === undefined ? 1 : c.dsx).toFixed(3);
+  document.getElementById('ofSy').value = (c.dsy === undefined ? 1 : c.dsy).toFixed(3);
+  document.getElementById('ofShear').value = (c.dshear || 0).toFixed(1);
+
+  if (hintEl) {
+    hintEl.textContent = onKey
+      ? 'The playhead is on this item’s own keyframe — editing "This keyframe" changes the actual authored pose. The Override below still applies on top, at every moment.'
+      : 'Between keyframes for this item, so its pose here is interpolated (calculated), not stored — read-only. Click a diamond on its row to jump to one of its keyframes and edit the pose directly, or use the Override below to nudge it everywhere.';
+  }
+
+  if (onKey) {
+    let undoPushed = false;
+    const commitNatural = () => {
+      const newWorld = {
+        x: Number(document.getElementById('nfX').value),
+        y: Number(document.getElementById('nfY').value),
+        angle: Number(document.getElementById('nfAngle').value),
+        scaleX: Number(document.getElementById('nfSx').value),
+        scaleY: Number(document.getElementById('nfSy').value),
+      };
+      if (Object.values(newWorld).some(v => !isFinite(v))) return;
+      if (!undoPushed) { pushUndo(); undoPushed = true; }
+      const [lx, ly] = worldToLocalXY(newWorld.x, newWorld.y, ctx.parentWorld);
+      ctx.key.transform.x = lx;
+      ctx.key.transform.y = ly;
+      ctx.key.transform.angle = worldToLocalAngle(newWorld.angle, ctx.parentWorld);
+      ctx.key.transform.scaleX = worldToLocalScale(newWorld.scaleX, ctx.parentWorld ? ctx.parentWorld.scaleX : 1);
+      ctx.key.transform.scaleY = worldToLocalScale(newWorld.scaleY, ctx.parentWorld ? ctx.parentWorld.scaleY : 1);
+      render();
+      scheduleAutosave();
+    };
+    _naturalFieldDefs.forEach(f => {
+      const el = document.getElementById(f.id);
+      el.addEventListener('focus', () => { undoPushed = false; });
+      el.addEventListener('input', commitNatural);
+    });
+  }
+
+  let undoPushedOverride = false;
+  _overrideFieldDefs.forEach(f => {
+    const el = document.getElementById(f.id);
+    el.addEventListener('focus', () => { undoPushedOverride = false; });
+    el.addEventListener('input', () => {
+      if (!selected) return;
+      const newVal = Number(el.value);
+      if (!isFinite(newVal)) return;
+      if (!undoPushedOverride) { pushUndo(); undoPushedOverride = true; }
+      const c2 = ensureCorrection(currentEntityIdx, selected.kind, selected.id, currentAnim.name, editScope);
+      c2[f.ckey] = newVal;
+      render();
+      scheduleAutosave();
+    });
+  });
+}
 
 // ---------- floating toolbar (follows the selected sprite/bone on canvas) ----------
-let floatToolbarMoved = false;   // true once the user has manually dragged it
+// The toolbar's position is always computed LIVE from the selected item's
+// current pivot (lastPivotById), every time positionFloatToolbar() runs --
+// it never "freezes" in a stale spot. Manually dragging the handle doesn't
+// set an absolute position; it adjusts floatToolbarUserOffset, a small
+// (dx, dy) nudge added on top of the live auto-position. That's what makes
+// the toolbar keep following the selected item as the playhead scrubs (its
+// world position changes) and as the canvas is scrolled (its screen
+// position changes), while still respecting "I dragged it slightly below
+// the sprite because the sprite's tiny." The offset resets whenever the
+// selection changes to a different item, so a fresh selection always
+// starts out snapped right next to it.
+let floatToolbarUserOffset = null; // {dx, dy} in content pixels, or null for pure auto-position
 let floatToolbarLastSelKey = null;
 
 function positionFloatToolbar() {
@@ -2241,21 +2495,19 @@ function positionFloatToolbar() {
   bar.style.display = 'flex';
   if (selKey() !== floatToolbarLastSelKey) {
     // selection just changed to a different item -- snap to its new position and
-    // forget any previous manual placement, so the window always starts out next
+    // forget any previous manual nudge, so the window always starts out next
     // to whatever you just picked.
     floatToolbarLastSelKey = selKey();
-    floatToolbarMoved = false;
+    floatToolbarUserOffset = null;
   }
-  if (floatToolbarMoved) return; // user has it where they want it; leave it alone
-  const [px, py] = lastPivotById[selKey()]; // canvas-internal pixels
+  const [px, py] = lastPivotById[selKey()]; // canvas-internal pixels, live for this frame
   // The toolbar is `position: absolute` inside #canvasWrap. CSS
   // `position: absolute` on a child of a scrollable container is
   // positioned relative to the SCROLL CONTENT, not the visible area —
-  // so `left: 0, top: 0` is the top-left of the entire 2740×1317 canvas
-  // content, not the wrap's visible 1370×429. We need to convert the
-  // canvas-internal pivot to wrap-content coords, then clamp it so the
-  // toolbar lands inside the currently-visible scroll window (so the
-  // user can actually see it).
+  // so `left: 0, top: 0` is the top-left of the entire scrollable canvas
+  // content, not the wrap's visible viewport. We need to work in that same
+  // content-coordinate space throughout (see setupFloatToolbarDrag below
+  // for why mixing it with viewport-relative coordinates was the bug).
   const wrap = document.getElementById('canvasWrap');
   const wrapVisibleW = wrap.clientWidth;
   const wrapVisibleH = wrap.clientHeight;
@@ -2265,8 +2517,10 @@ function positionFloatToolbar() {
   // The canvas is top:0/left:0 inside the wrap and displays at its natural
   // internal-pixel size (1:1), so the canvas-internal pivot (px, py)
   // maps 1:1 to wrap-content coords.
-  const contentX = px;
-  const contentY = py;
+  const offX = floatToolbarUserOffset ? floatToolbarUserOffset.dx : 0;
+  const offY = floatToolbarUserOffset ? floatToolbarUserOffset.dy : 0;
+  const contentX = px + offX;
+  const contentY = py + offY;
   // Clamp to the visible scroll window, expressed in wrap-content coords.
   // (The visible window is [scrollLeft, scrollLeft+visibleW] x
   // [scrollTop, scrollTop+visibleH].)
@@ -2274,8 +2528,16 @@ function positionFloatToolbar() {
   const maxX = wrapScrollLeft + wrapVisibleW - barW - 4;
   const minY = wrapScrollTop + 4;
   const maxY = wrapScrollTop + wrapVisibleH - barH - 4;
-  const bx = Math.max(minX, Math.min(maxX, contentX - barW / 2));
-  const by = Math.max(minY, Math.min(maxY, contentY - 56));
+  // When the toolbar's own content (e.g. a sprite's full field set plus the
+  // color filter section) is taller/wider than the visible canvas area,
+  // maxX/maxY fall BELOW minX/minY -- clamping to that inverted range would
+  // always win on the min side and pin the toolbar to the top-left corner
+  // no matter where you drag it. In that case only enforce the min bound
+  // (don't let it go off the top/left) and let it extend past the bottom/
+  // right, where canvasWrap's own scrolling (or the toolbar's native resize
+  // handle) can still reach it.
+  const bx = maxX >= minX ? Math.max(minX, Math.min(maxX, contentX - barW / 2)) : Math.max(minX, contentX - barW / 2);
+  const by = maxY >= minY ? Math.max(minY, Math.min(maxY, contentY - 56)) : Math.max(minY, contentY - 56);
   bar.style.left = bx + 'px';
   bar.style.top = by + 'px';
 }
@@ -2285,54 +2547,54 @@ document.getElementById('ftRotate').addEventListener('click', () => toast('Drag 
 document.getElementById('ftScale').addEventListener('click', () => toast('Drag the green handle to scale.'));
 
 // ---------- dragging the floating window itself (separate from dragging a sprite/bone) ----------
+// Dragging the handle adjusts floatToolbarUserOffset (a small nudge on top
+// of the live auto-position, see positionFloatToolbar above) using plain
+// viewport-pixel mouse deltas -- it never reads or writes bar.style.left/top
+// directly. That sidesteps the previous bug entirely: bar.style.left/top
+// are CSS "position: absolute" values, which are relative to the scrollable
+// CONTENT origin, but the old code computed the drag's starting position via
+// getBoundingClientRect() diffs, which are relative to the current VIEWPORT
+// (i.e. already shifted by however much canvasWrap happened to be scrolled
+// at that moment) -- assigning one to the other silently lost the wrap's
+// scroll offset, so starting a drag while scrolled would instantly jump the
+// toolbar by that many pixels (up/left, hence "jumps to the top" / "off
+// screen"). Only the toolbar's WIDTH/HEIGHT (native CSS `resize: both`) are
+// persisted across reloads -- its screen POSITION is derived fresh from the
+// current selection every time, so there's nothing meaningful to persist.
 (function setupFloatToolbarDrag() {
   const bar = document.getElementById('floatToolbar');
   const handle = document.getElementById('floatToolbarHandle');
   const STORAGE_KEY = 'scml_float_toolbar_v1';
-  // Load saved state
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    if (typeof saved.left === 'number') bar.style.left = saved.left + 'px';
-    if (typeof saved.top === 'number') bar.style.top = saved.top + 'px';
     if (typeof saved.width === 'number') bar.style.width = saved.width + 'px';
     if (typeof saved.height === 'number') bar.style.height = saved.height + 'px';
-    if (saved.userMoved) floatToolbarMoved = true;
   } catch (e) {}
-  function saveState() {
+  function saveSize() {
     try {
       const rect = bar.getBoundingClientRect();
-      const parentRect = bar.offsetParent.getBoundingClientRect();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        left: rect.left - parentRect.left,
-        top: rect.top - parentRect.top,
-        width: rect.width,
-        height: rect.height,
-        userMoved: floatToolbarMoved
-      }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ width: rect.width, height: rect.height }));
     } catch (e) {}
   }
-  let dragging = false, startMouse = [0, 0], startPos = [0, 0];
+  let dragging = false, startMouse = [0, 0], startOffset = { dx: 0, dy: 0 };
   handle.addEventListener('mousedown', (e) => {
     e.stopPropagation();
     dragging = true;
-    floatToolbarMoved = true;
-    const rect = bar.getBoundingClientRect();
-    const parentRect = bar.offsetParent.getBoundingClientRect();
     startMouse = [e.clientX, e.clientY];
-    startPos = [rect.left - parentRect.left, rect.top - parentRect.top];
+    startOffset = floatToolbarUserOffset ? { ...floatToolbarUserOffset } : { dx: 0, dy: 0 };
   });
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     const dx = e.clientX - startMouse[0], dy = e.clientY - startMouse[1];
-    bar.style.left = Math.max(0, startPos[0] + dx) + 'px';
-    bar.style.top = Math.max(0, startPos[1] + dy) + 'px';
+    floatToolbarUserOffset = { dx: startOffset.dx + dx, dy: startOffset.dy + dy };
+    positionFloatToolbar();
   });
   window.addEventListener('mouseup', () => {
-    if (dragging) { dragging = false; saveState(); }
+    dragging = false;
   });
-  // Save on resize too (ResizeObserver)
+  // Save size (not position) on resize too (ResizeObserver, native CSS resize handle)
   if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(saveState).observe(bar);
+    new ResizeObserver(saveSize).observe(bar);
   }
 })();
 
@@ -2675,6 +2937,128 @@ checkForAutosave();
   });
 })();
 
+// ---------- resizable panel sections, panel widths, and timeline height ----------
+// Every named "view" in the main window (Project, View, Loop start, Edit,
+// Selected item, the left/right panels themselves, and the Timeline) can be
+// dragged to a size the user chooses, persisted in localStorage so it
+// survives a reload. The LAST section in each panel (Draw order on the
+// left, Current state on the right) is not directly resizable -- it has
+// class "flex-fill" and absorbs whatever space the others don't use.
+const RESIZE_STORAGE_PREFIX = 'scml_resize_';
+
+function makeSectionResizable(handleEl, sectionEl, storageKey, opts) {
+  const { min = 40, max = 640, defaultPx } = opts;
+  let saved = NaN;
+  try { saved = parseFloat(localStorage.getItem(RESIZE_STORAGE_PREFIX + storageKey)); } catch (e) {}
+  const initial = Math.max(min, Math.min(max, (isFinite(saved) && saved > 0) ? saved : defaultPx));
+  sectionEl.style.flex = '0 0 ' + initial + 'px';
+
+  handleEl.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = sectionEl.getBoundingClientRect().height;
+    handleEl.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    const onMove = (ev) => {
+      const h = Math.max(min, Math.min(max, startH + (ev.clientY - startY)));
+      sectionEl.style.flex = '0 0 ' + h + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      handleEl.classList.remove('dragging');
+      document.body.style.cursor = '';
+      try { localStorage.setItem(RESIZE_STORAGE_PREFIX + storageKey, String(sectionEl.getBoundingClientRect().height)); } catch (e) {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// Drags a CSS custom property (on :root) by mouse-X delta -- used for the
+// left/right panel widths, which are grid-template-columns tracks.
+function makeColumnResizable(handleEl, cssVarName, storageKey, opts) {
+  const { min = 160, max = 560, defaultPx, invert = false } = opts;
+  let saved = NaN;
+  try { saved = parseFloat(localStorage.getItem(RESIZE_STORAGE_PREFIX + storageKey)); } catch (e) {}
+  const initial = Math.max(min, Math.min(max, (isFinite(saved) && saved > 0) ? saved : defaultPx));
+  document.documentElement.style.setProperty(cssVarName, initial + 'px');
+
+  handleEl.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(cssVarName)) || defaultPx;
+    handleEl.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev) => {
+      const dx = (ev.clientX - startX) * (invert ? -1 : 1);
+      const w = Math.max(min, Math.min(max, startW + dx));
+      document.documentElement.style.setProperty(cssVarName, w + 'px');
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      handleEl.classList.remove('dragging');
+      document.body.style.cursor = '';
+      const finalW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(cssVarName));
+      try { localStorage.setItem(RESIZE_STORAGE_PREFIX + storageKey, String(finalW)); } catch (e) {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// Drags a CSS custom property by mouse-Y delta, inverted (dragging the
+// handle UP grows the timeline panel below it) -- used for --timeline-h.
+function makeRowResizableInverted(handleEl, cssVarName, storageKey, opts) {
+  const { min = 120, max = 760, defaultPx } = opts;
+  let saved = NaN;
+  try { saved = parseFloat(localStorage.getItem(RESIZE_STORAGE_PREFIX + storageKey)); } catch (e) {}
+  const initial = Math.max(min, Math.min(max, (isFinite(saved) && saved > 0) ? saved : defaultPx));
+  document.documentElement.style.setProperty(cssVarName, initial + 'px');
+
+  handleEl.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(cssVarName)) || defaultPx;
+    handleEl.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    const onMove = (ev) => {
+      const h = Math.max(min, Math.min(max, startH + (startY - ev.clientY)));
+      document.documentElement.style.setProperty(cssVarName, h + 'px');
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      handleEl.classList.remove('dragging');
+      document.body.style.cursor = '';
+      const finalH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(cssVarName));
+      try { localStorage.setItem(RESIZE_STORAGE_PREFIX + storageKey, String(finalH)); } catch (e) {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+(function initResizablePanels() {
+  const bindSection = (handleId, sectionId, key, opts) => {
+    const h = document.getElementById(handleId), s = document.getElementById(sectionId);
+    if (h && s) makeSectionResizable(h, s, key, opts);
+  };
+  bindSection('rzProject', 'secProject', 'left_project', { min: 60, max: 320, defaultPx: 96 });
+  bindSection('rzView', 'secView', 'left_view', { min: 60, max: 420, defaultPx: 188 });
+  bindSection('rzLoopStart', 'secLoopStart', 'left_loopstart', { min: 60, max: 420, defaultPx: 150 });
+  bindSection('rzEdit', 'secEdit', 'right_edit', { min: 60, max: 420, defaultPx: 148 });
+  bindSection('rzSelectedItem', 'secSelectedItem', 'right_selitem', { min: 80, max: 640, defaultPx: 300 });
+
+  const hLeft = document.getElementById('rzLeftPanel');
+  if (hLeft) makeColumnResizable(hLeft, '--left-panel-w', 'left_panel_w', { min: 180, max: 480, defaultPx: 250 });
+  const hRight = document.getElementById('rzRightPanel');
+  if (hRight) makeColumnResizable(hRight, '--right-panel-w', 'right_panel_w', { min: 220, max: 560, defaultPx: 300, invert: true });
+  const hTimeline = document.getElementById('rzTimeline');
+  if (hTimeline) makeRowResizableInverted(hTimeline, '--timeline-h', 'timeline_h', { min: 160, max: 760, defaultPx: 360 });
+})();
+
 
 
 document.getElementById('saveEdits').addEventListener('click', () => {
@@ -2950,6 +3334,7 @@ document.getElementById('createAnimBtn').addEventListener('click', () => {
   clone.name = name;
   currentEntity.animations.push(clone);
   addedAnimations.push({ entityIdx: currentEntityIdx, anim: clone });
+  invalidateSmartNames(currentEntity);
   populateAnims();
   animSelect.value = currentEntity.animations.length - 1;
   setAnim(currentEntity.animations.length - 1);
