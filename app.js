@@ -1598,12 +1598,15 @@ function buildEntityObjectRoster(entity) {
 }
 
 function renderAssetManager(entity) {
-  // Populates the asset-manager POPUP grid (sprites only). Only touches the
-  // DOM when the modal is actually open -- the roster itself no longer
-  // depends on the current frame, so there's nothing to refresh per-frame.
+  // Populates the asset-manager POPUP grids (sprites + raw assets). Only
+  // touches the DOM when the modal is actually open -- neither view depends
+  // on the current frame, so there's nothing to refresh per-frame; this
+  // just keeps the raw tab's "used by" labels in sync if a rename happens
+  // on the sprites tab while the modal is still open.
   const modal = document.getElementById('assetManagerModal');
   if (!modal.classList.contains('show')) return;
   renderAssetGrid(entity, buildEntityObjectRoster(entity));
+  renderRawAssetGrid(entity);
 }
 
 function renderAssetGrid(entity, objects) {
@@ -1646,6 +1649,81 @@ function renderAssetGrid(entity, objects) {
       scheduleAutosave();
     });
   });
+  const countEl = document.getElementById('amSpritesCount');
+  if (countEl) countEl.textContent = seen.size;
+}
+
+// ---------- raw assets view: every individual PNG, independent of rig wiring ----------
+// The "Sprites" tab groups images by the logical slot they're wired into
+// (an object_ref's timeline); this is the flip side -- literally every
+// <file> declared in every <folder>, whether or not anything currently
+// references it. Surfaces assets that exist in the project but were never
+// wired into any animation (checked against this rig: 3 of 56 PNGs are
+// currently unused), and cross-references each file against which named
+// sprite(s) in the CURRENT entity draw it, if any.
+function buildRawAssetList(entity) {
+  const usedAnywhere = new Set();
+  for (const ent of entities) {
+    for (const anim of ent.animations) {
+      for (const tlId of Object.keys(anim.timelines)) {
+        for (const k of anim.timelines[tlId].keys) {
+          if (k.folder === null || k.folder === undefined) continue;
+          usedAnywhere.add(k.folder + '_' + k.file);
+        }
+      }
+    }
+  }
+  const usedByCurrent = new Map(); // "folder_file" -> Set(sprite name)
+  for (const obj of buildEntityObjectRoster(entity)) {
+    const spriteName = nameFor('objects', obj.id, entity);
+    for (const v of (obj.variants || [])) {
+      const key = v.folder + '_' + v.file;
+      if (!usedByCurrent.has(key)) usedByCurrent.set(key, new Set());
+      usedByCurrent.get(key).add(spriteName);
+    }
+  }
+  const list = [];
+  for (const [fid, finfo] of Object.entries(folders)) {
+    for (const [fileId, attrs] of Object.entries(finfo.files)) {
+      const key = fid + '_' + fileId;
+      list.push({
+        folder: fid, file: fileId, folderId: fid, folderName: finfo.name, name: attrs.name,
+        width: attrs.width, height: attrs.height,
+        usedByNames: usedByCurrent.has(key) ? [...usedByCurrent.get(key)] : [],
+        usedAnywhere: usedAnywhere.has(key),
+      });
+    }
+  }
+  return list;
+}
+
+function renderRawAssetGrid(entity) {
+  const el = document.getElementById('rawAssetGrid');
+  if (!el) return;
+  el.classList.add('raw-grid');
+  const list = buildRawAssetList(entity);
+  const byFolder = {};
+  for (const item of list) (byFolder[item.folderId] = byFolder[item.folderId] || []).push(item);
+  let html = '';
+  for (const fid of Object.keys(byFolder).sort((a, b) => Number(a) - Number(b))) {
+    const items = byFolder[fid];
+    html += `<div class="am-folder-header">${items[0].folderName} <span style="font-weight:400;color:var(--text-faint);">(${items.length})</span></div>`;
+    for (const item of items) {
+      const imgSrc = images[item.folder + '_' + item.file];
+      const usedLabel = item.usedByNames.length ? 'used by: ' + item.usedByNames.join(', ')
+        : (item.usedAnywhere ? 'used by another skin' : '');
+      html += `<div class="asset-card${!item.usedAnywhere ? ' raw-unused' : ''}">
+        <div class="thumb-wrap">${imgSrc ? `<img src="${imgSrc}" alt="">` : '<span style="color:#556;font-size:10px;">no image</span>'}</div>
+        <div class="raw-filename" title="${item.name.replace(/"/g, '&quot;')}">${item.name.split('/').pop()}</div>
+        <div class="raw-dims">${Math.round(item.width)}×${Math.round(item.height)}px</div>
+        ${usedLabel ? `<div class="raw-usedby" title="${usedLabel.replace(/"/g, '&quot;')}">${usedLabel}</div>` : ''}
+        ${!item.usedAnywhere ? '<span class="raw-unused-badge">Not used</span>' : ''}
+      </div>`;
+    }
+  }
+  el.innerHTML = html || '<div class="hint">No raw assets found.</div>';
+  const countEl = document.getElementById('amRawCount');
+  if (countEl) countEl.textContent = list.length;
 }
 
 function updateReorderButtons() {
@@ -1757,11 +1835,29 @@ function applyBackdrop() {
 
 document.getElementById('tmAssets').addEventListener('click', () => {
   renderAssetGrid(currentEntity, buildEntityObjectRoster(currentEntity));
+  renderRawAssetGrid(currentEntity);
   document.getElementById('assetManagerModal').classList.add('show');
 });
 document.getElementById('closeAssetManager').addEventListener('click', () => {
   document.getElementById('assetManagerModal').classList.remove('show');
 });
+
+// ---------- asset manager tabs (Sprites / Raw assets) ----------
+(function initAssetManagerTabs() {
+  const tabSprites = document.getElementById('amTabSprites');
+  const tabRaw = document.getElementById('amTabRaw');
+  const paneSprites = document.getElementById('amSpritesPane');
+  const paneRaw = document.getElementById('amRawPane');
+  if (!tabSprites || !tabRaw) return;
+  tabSprites.addEventListener('click', () => {
+    tabSprites.classList.add('active'); tabRaw.classList.remove('active');
+    paneSprites.style.display = ''; paneRaw.style.display = 'none';
+  });
+  tabRaw.addEventListener('click', () => {
+    tabRaw.classList.add('active'); tabSprites.classList.remove('active');
+    paneRaw.style.display = ''; paneSprites.style.display = 'none';
+  });
+})();
 
 // Wire up the secondary Close/Cancel buttons in each modal footer
 document.getElementById('closeFileModal2').addEventListener('click', () => document.getElementById('fileModal').classList.remove('show'));

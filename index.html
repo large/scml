@@ -367,14 +367,24 @@
 </div>
 
 <div id="assetManagerModal" class="modal-backdrop">
-  <div class="modal-box" style="width:min(820px, 90vw);">
+  <div class="modal-box" style="width:min(880px, 90vw);">
     <div class="modal-header">
-      <span>Asset manager — sprites</span>
+      <span>Asset manager</span>
       <button class="modal-close" id="closeAssetManager"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg></button>
     </div>
+    <div class="am-tabs">
+      <button class="am-tab active" id="amTabSprites" type="button">Sprites <span class="am-tab-count" id="amSpritesCount"></span></button>
+      <button class="am-tab" id="amTabRaw" type="button">Raw assets <span class="am-tab-count" id="amRawCount"></span></button>
+    </div>
     <div class="modal-body">
-      <div class="hint">Rename any sprite; it updates the hierarchy, data panels, and edit-mode selection everywhere at once. Bones are renamed by double-clicking them in the hierarchy panel.</div>
-      <div id="assetGrid" class="asset-grid"></div>
+      <div id="amSpritesPane">
+        <div class="hint">One card per sprite <em>slot</em> in the rig — grouped by every PNG that slot ever swaps between. Rename any sprite; it updates the hierarchy, data panels, and edit-mode selection everywhere at once. Bones are renamed by double-clicking them in the hierarchy panel.</div>
+        <div id="assetGrid" class="asset-grid"></div>
+      </div>
+      <div id="amRawPane" style="display:none;">
+        <div class="hint">Every individual PNG declared in this project's &lt;folder&gt; tags — the raw material, independent of whether or how it's currently wired into the rig. Sprites with a dimmed "not used" badge exist in the file but aren't referenced by any animation yet.</div>
+        <div id="rawAssetGrid" class="asset-grid"></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn subtle" id="closeAssetManager2">Close</button>

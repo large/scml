@@ -903,10 +903,49 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 }
 #autosaveBanner.show { display: flex; }
 #autosaveBanner button { margin: 0; }
+.am-tabs {
+  display: flex; gap: 2px; padding: 8px 16px 0; background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+.am-tab {
+  padding: 7px 14px; font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
+}
+.am-tab:hover { color: var(--text); }
+.am-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.am-tab-count {
+  font-family: var(--font-mono); font-size: 9px; color: var(--text-faint);
+  background: var(--bg-elevated); border-radius: 8px; padding: 1px 6px;
+}
+.am-tab.active .am-tab-count { color: var(--accent); }
 .asset-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 8px; max-height: 60vh; overflow-y: auto;
 }
+.asset-grid.raw-grid { grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); }
+.asset-card .raw-filename {
+  font-size: 9px; color: var(--text); margin-top: 4px; font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.asset-card .raw-dims { font-size: 9px; color: var(--text-muted); margin-top: 1px; }
+.asset-card .raw-usedby {
+  font-size: 9px; color: var(--text-secondary); margin-top: 3px;
+  padding-top: 3px; border-top: 1px solid var(--border-subtle);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.asset-card.raw-unused { border-color: var(--warn); border-style: dashed; }
+.asset-card .raw-unused-badge {
+  display: inline-block; margin-top: 3px; font-size: 8px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--warn);
+  background: rgba(240, 160, 64, 0.15); border-radius: 3px; padding: 2px 5px;
+}
+.am-folder-header {
+  grid-column: 1 / -1; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-secondary); margin: 10px 0 2px;
+  padding-bottom: 3px; border-bottom: 1px solid var(--border);
+}
+.am-folder-header:first-child { margin-top: 0; }
 .asset-card {
   background: var(--bg-elevated); border-radius: 4px;
   padding: 6px; text-align: center; border: 1px solid var(--border);
