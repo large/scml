@@ -1,4 +1,4 @@
-# scml
+# SCML editor
 SCML editor for easy only modify of Sprinter files from Brashmonkey
 
 Reference:
