@@ -392,6 +392,22 @@
   </div>
 </div>
 
+<div id="pickImageModal" class="modal-backdrop">
+  <div class="modal-box" style="width:min(880px, 90vw);">
+    <div class="modal-header">
+      <span>Pick an image for this keyframe</span>
+      <button class="modal-close" id="closePickImage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="hint">Every raw PNG in the project, including ones not currently used anywhere. Click one to assign it to this keyframe.</div>
+      <div id="pickImageGrid" class="asset-grid raw-grid"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn subtle" id="closePickImage2">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div id="exportPreviewModal" class="modal-backdrop">
   <div class="modal-box">
     <div class="modal-header">

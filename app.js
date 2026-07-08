@@ -1539,12 +1539,14 @@ function onRulerMouseDown(e) {
   playing = false;
   playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
   render();
+  updateEditPanel();
   const onMove = (ev) => {
     const xx = ev.clientX - rect.left;
     const f = Math.max(0, Math.min(1, xx / rect.width));
     t = f * currentAnim.length;
     timeSlider.value = Math.round(t);
     render();
+    updateEditPanel();
   };
   const onUp = () => {
     window.removeEventListener('mousemove', onMove);
@@ -1726,6 +1728,54 @@ function renderRawAssetGrid(entity) {
   if (countEl) countEl.textContent = list.length;
 }
 
+// ---------- image picker (assign a different PNG to the selected keyframe) ----------
+// Reuses the same raw-asset listing as the Asset Manager's Raw assets tab
+// -- same library, different purpose (pick one instead of just browsing).
+function openImagePicker() {
+  if (!selected || selected.kind !== 'objects') return;
+  const ctx = getSelectedKeyframeContext();
+  if (!ctx || !ctx.onKeyframe) return;
+  renderImagePickerGrid(ctx);
+  document.getElementById('pickImageModal').classList.add('show');
+}
+
+function renderImagePickerGrid(ctx) {
+  const el = document.getElementById('pickImageGrid');
+  if (!el) return;
+  const list = buildRawAssetList(currentEntity);
+  const byFolder = {};
+  for (const item of list) (byFolder[item.folderId] = byFolder[item.folderId] || []).push(item);
+  let html = '';
+  for (const fid of Object.keys(byFolder).sort((a, b) => Number(a) - Number(b))) {
+    const items = byFolder[fid];
+    html += `<div class="am-folder-header">${items[0].folderName}</div>`;
+    for (const item of items) {
+      const imgSrc = images[item.folder + '_' + item.file];
+      const isCurrent = String(item.folder) === String(ctx.key.folder) && String(item.file) === String(ctx.key.file);
+      html += `<div class="asset-card pickable" data-folder="${item.folder}" data-file="${item.file}">
+        <div class="thumb-wrap">${imgSrc ? `<img src="${imgSrc}" alt="">` : '<span style="color:#556;font-size:10px;">no image</span>'}</div>
+        <div class="raw-filename" title="${item.name.replace(/"/g, '&quot;')}">${item.name.split('/').pop()}</div>
+        <div class="raw-dims">${Math.round(item.width)}×${Math.round(item.height)}px</div>
+        ${isCurrent ? '<div class="raw-usedby">current</div>' : ''}
+      </div>`;
+    }
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('.asset-card.pickable').forEach(card => {
+    card.addEventListener('click', () => {
+      pushUndo();
+      ctx.key.folder = card.dataset.folder;
+      ctx.key.file = card.dataset.file;
+      invalidateSmartNames(currentEntity);
+      document.getElementById('pickImageModal').classList.remove('show');
+      render();
+      updateEditPanel();
+      scheduleAutosave();
+      toast('Image assigned to this keyframe.');
+    });
+  });
+}
+
 function updateReorderButtons() {
   const isSprite = selected && selected.kind === 'objects';
   const ids = ['reorderTop', 'reorderUp', 'reorderDown', 'reorderBottom'];
@@ -1865,6 +1915,8 @@ document.getElementById('closeNewAnimModal2').addEventListener('click', () => do
 document.getElementById('closeSheetConfig2').addEventListener('click', () => document.getElementById('sheetConfigModal').classList.remove('show'));
 document.getElementById('closeLoadProjectModal2').addEventListener('click', () => document.getElementById('loadProjectModal').classList.remove('show'));
 document.getElementById('closeAssetManager2').addEventListener('click', () => document.getElementById('assetManagerModal').classList.remove('show'));
+document.getElementById('closePickImage').addEventListener('click', () => document.getElementById('pickImageModal').classList.remove('show'));
+document.getElementById('closePickImage2').addEventListener('click', () => document.getElementById('pickImageModal').classList.remove('show'));
 document.getElementById('cancelExportBtn2').addEventListener('click', () => {
   document.getElementById('exportPreviewModal').classList.remove('show');
   pendingSheetExport = null;
@@ -2013,15 +2065,25 @@ entitySelect.addEventListener('change', () => {
   setAnim(0);
 });
 animSelect.addEventListener('change', () => setAnim(animSelect.value));
-timeSlider.addEventListener('input', () => { t = Number(timeSlider.value); playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render(); });
+// Every one of these time-changing handlers also calls updateEditPanel() --
+// not just render() -- so the Selected item panel's "This keyframe" vs.
+// "Current pose (calculated)" state (and the Insert-keyframe button's
+// visibility) stays live as the playhead moves, instead of only refreshing
+// on the next explicit selection action. Safe to call frequently: it early-
+// returns immediately when nothing's selected, and unlike the natural/
+// override field handlers (which call plain render() from inside their own
+// 'input' listener so they never rebuild the very field being typed in),
+// none of these paths can fire while a user is mid-keystroke in one of
+// those fields.
+timeSlider.addEventListener('input', () => { t = Number(timeSlider.value); playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render(); updateEditPanel(); });
 
 document.getElementById('stepFwdBtn').addEventListener('click', () => {
   t = Math.min(currentAnim.length, t + currentAnim.interval);
-  timeSlider.value = t; playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render();
+  timeSlider.value = t; playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render(); updateEditPanel();
 });
 document.getElementById('stepBackBtn').addEventListener('click', () => {
   t = Math.max(0, t - currentAnim.interval);
-  timeSlider.value = t; playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render();
+  timeSlider.value = t; playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render(); updateEditPanel();
 });
 playBtn.addEventListener('click', () => {
   playing = !playing;
@@ -2067,6 +2129,7 @@ function tick(ts) {
   if (t > currentAnim.length) t -= currentAnim.length;
   timeSlider.value = Math.round(t);
   render();
+  updateEditPanel();
   requestAnimationFrame(tick);
 }
 
@@ -2276,25 +2339,16 @@ window.addEventListener('keydown', (e) => {
   render();
 });
 
-function updateEditPanel() {
-  const scopeLabel = document.getElementById('ftScopeLabel');
-  const colorSection = document.getElementById('ftColorSection');
-  if (!selected) {
-    selInfo.textContent = 'Nothing selected';
-    scopeLabel.textContent = '';
-    colorSection.style.display = 'none';
-    if (typeof updateReorderButtons === 'function') updateReorderButtons();
-    positionFloatToolbar();
-    return;
-  }
-  const name = nameFor(selected.kind, selected.id, currentEntity);
-  selInfo.textContent = name;
-  scopeLabel.textContent = `${selected.kind === 'bones' ? 'Bone' : 'Sprite'} · scope: ${editScope === 'this' ? currentAnim.name + ' only' : 'all animations'}`;
+// Syncs just the floating toolbar's own fields (fX/fY/.../fShearA, plus the
+// sprite-only w/h/pivot readout) -- split out from updateEditPanel() so
+// natural-keyframe edits (renderEditFields()'s commitNatural) can refresh
+// the toolbar's readout too, without going through the full
+// updateEditPanel() -> renderEditFields() path, which rebuilds
+// #editFieldsWrap's innerHTML and would steal focus out of the very field
+// being typed in.
+function syncFloatToolbarFields() {
+  if (!selected) return;
   const c = ensureCorrection(currentEntityIdx, selected.kind, selected.id, currentAnim.name, editScope);
-  // The float toolbar shows the REAL (post-correction) world position,
-  // scale, shear — same as the right panel — plus the sprite's native
-  // width/height/pivot for sprites. Bones don't have width/height/pivot,
-  // so those fields are hidden for bones.
   const floatWorld = lastWorldById[(selected.kind === 'objects' ? 'objects:' : 'bones:') + selected.id];
   const bar = document.getElementById('floatToolbar');
   if (floatWorld) {
@@ -2337,7 +2391,23 @@ function updateEditPanel() {
   } else {
     bar.classList.remove('show-obj-fields');
   }
-  
+}
+
+function updateEditPanel() {
+  const scopeLabel = document.getElementById('ftScopeLabel');
+  const colorSection = document.getElementById('ftColorSection');
+  if (!selected) {
+    selInfo.textContent = 'Nothing selected';
+    scopeLabel.textContent = '';
+    colorSection.style.display = 'none';
+    if (typeof updateReorderButtons === 'function') updateReorderButtons();
+    positionFloatToolbar();
+    return;
+  }
+  const name = nameFor(selected.kind, selected.id, currentEntity);
+  selInfo.textContent = name;
+  scopeLabel.textContent = `${selected.kind === 'bones' ? 'Bone' : 'Sprite'} · scope: ${editScope === 'this' ? currentAnim.name + ' only' : 'all animations'}`;
+  syncFloatToolbarFields();
   renderEditFields();
   const selName = document.getElementById('selName');
   const selIcon = document.getElementById('selIcon');
@@ -2454,6 +2524,83 @@ function getSelectedKeyframeContext() {
   return { ref, timeline, keyIndex, key, parentWorld, onKeyframe: !!key && Math.abs(key.time - timeMs) < 0.5 };
 }
 
+// Inserts a new key into a timeline at the given time, keeping keys sorted
+// chronologically, and fixes up every mainline ref (across the WHOLE
+// animation) that points at this same timeline so each keeps anchoring at
+// the same logical key it did before the insert. This is necessary because
+// SCML's ref `key` attribute is a raw array INDEX into timeline.keys (not
+// an id lookup) -- confirmed against both the official spec pseudocode
+// (`TimelineKey keyA = timeline.keys[ref.key]`) and this app's own
+// getTimelineValueAt -- so inserting anywhere but the very end shifts every
+// later key's array position by one, and every ref pointing at or past that
+// position has to shift with it or it'll silently anchor on the wrong pose.
+function insertTimelineKeyAt(anim, timelineId, timeMs, transform) {
+  const tl = anim.timelines[timelineId];
+  let insertIdx = tl.keys.findIndex(k => k.time > timeMs);
+  if (insertIdx === -1) insertIdx = tl.keys.length;
+  const prevKey = tl.keys[Math.max(0, insertIdx - 1)];
+  const newKey = {
+    id: 'new_' + Date.now(),
+    time: timeMs,
+    spin: prevKey ? prevKey.spin : 1,
+    curve_type: prevKey ? prevKey.curve_type : '0',
+    c1: prevKey ? prevKey.c1 : 0,
+    c2: prevKey ? prevKey.c2 : 0,
+    transform: {
+      x: transform.x, y: transform.y, angle: transform.angle,
+      scaleX: transform.scaleX, scaleY: transform.scaleY,
+      alpha: transform.alpha === undefined ? 1 : transform.alpha
+    },
+    folder: transform.folder !== undefined ? transform.folder : null,
+    file: transform.file !== undefined ? transform.file : null,
+  };
+  tl.keys.splice(insertIdx, 0, newKey);
+  for (const mk of anim.mainline) {
+    // A mainline key that sits at the SAME time as the newly inserted key
+    // should anchor exactly on it -- not on whatever it anchored on before,
+    // which was necessarily an earlier key (there was no exact match until
+    // now). Handled as its own case, before the generic >= insertIdx shift
+    // below, since this ref's OLD index is < insertIdx (unaffected by the
+    // shift) but still needs to move -- to insertIdx exactly, not by +1.
+    const mkAtNewTime = Math.abs(mk.time - timeMs) < 0.5;
+    for (const br of mk.bone_refs) {
+      if (br.timeline !== timelineId) continue;
+      if (mkAtNewTime) { br.key = String(insertIdx); continue; }
+      const k = parseInt(br.key, 10) || 0;
+      if (k >= insertIdx) br.key = String(k + 1);
+    }
+    for (const orf of mk.object_refs) {
+      if (orf.timeline !== timelineId) continue;
+      if (mkAtNewTime) { orf.key = String(insertIdx); continue; }
+      const k = parseInt(orf.key, 10) || 0;
+      if (k >= insertIdx) orf.key = String(k + 1);
+    }
+  }
+  invalidateSmartNames(currentEntity);
+  return insertIdx;
+}
+
+// Inserts a new keyframe for the selected item at the current playhead
+// time, capturing its live interpolated pose as the new key's starting
+// value -- the insert itself causes no visual jump; the point is to give
+// you a key to then pose via "This keyframe" (which becomes editable
+// immediately after, since the playhead now sits exactly on it).
+function insertKeyframeForSelected() {
+  if (!selected) return;
+  const ctx = getSelectedKeyframeContext();
+  if (!ctx) { toast('This item isn\'t part of the pose at this instant -- nothing to key.'); return; }
+  if (ctx.onKeyframe) { toast('Already on a keyframe here.'); return; }
+  const timeMs = normalizeAnimTime(currentAnim, t);
+  const looping = currentAnim.looping !== false;
+  const localNow = getTimelineValueAt(ctx.timeline, ctx.ref.key, timeMs, currentAnim.length, looping);
+  pushUndo();
+  insertTimelineKeyAt(currentAnim, ctx.ref.timeline, timeMs, localNow);
+  render();
+  updateEditPanel();
+  scheduleAutosave();
+  toast('Keyframe inserted -- edit "This keyframe" below to pose it.');
+}
+
 const _naturalFieldDefs = [
   { id: 'nfX', label: 'x', step: 1 },
   { id: 'nfY', label: 'y', step: 1 },
@@ -2480,13 +2627,27 @@ function renderEditFields() {
   const onKey = !!(ctx && ctx.onKeyframe);
   const world = lastWorldById[(selected.kind === 'objects' ? 'objects:' : 'bones:') + selected.id];
 
+  const isObjectOnKey = onKey && selected.kind === 'objects';
   let html = '<div class="edit-fields-section">';
   html += '<div class="edit-fields-title">' + (onKey ? 'This keyframe' : 'Current pose (calculated)') + '</div>';
+  if (isObjectOnKey) {
+    const finfo = folders[ctx.key.folder] && folders[ctx.key.folder].files[ctx.key.file];
+    const imgSrc = (ctx.key.folder !== null && ctx.key.folder !== undefined) ? images[ctx.key.folder + '_' + ctx.key.file] : null;
+    html += '<div class="key-image-row">';
+    html += '<div class="key-image-thumb">' + (imgSrc ? `<img src="${imgSrc}" alt="">` : '') + '</div>';
+    html += '<div class="key-image-info"><div class="key-image-name">' + (finfo ? finfo.name.split('/').pop() : 'no image') + '</div>';
+    html += '<button class="btn subtle" id="btnChangeImage" type="button">Change image…</button></div>';
+    html += '</div>';
+  }
   html += '<div class="transform-grid">';
   for (const f of _naturalFieldDefs) {
     html += `<div class="tf"><span class="lbl">${f.label}</span><input type="number" id="${f.id}" step="${f.step}"${onKey ? '' : ' readonly'}></div>`;
   }
-  html += '</div></div>';
+  html += '</div>';
+  if (ctx && !onKey) {
+    html += '<button class="btn full subtle" id="btnInsertKeyframe" type="button" style="margin-top:6px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Insert keyframe here</button>';
+  }
+  html += '</div>';
   html += '<div class="edit-fields-section override-section">';
   html += '<div class="edit-fields-title">Override <span class="edit-fields-subtitle">on top of the keyframe, applies everywhere</span></div>';
   html += '<div class="transform-grid">';
@@ -2495,6 +2656,11 @@ function renderEditFields() {
   }
   html += '</div></div>';
   wrap.innerHTML = html;
+
+  const insertBtn = document.getElementById('btnInsertKeyframe');
+  if (insertBtn) insertBtn.addEventListener('click', insertKeyframeForSelected);
+  const changeImageBtn = document.getElementById('btnChangeImage');
+  if (changeImageBtn) changeImageBtn.addEventListener('click', openImagePicker);
 
   if (world) {
     let nx, ny, na, nsx, nsy;
@@ -2544,6 +2710,7 @@ function renderEditFields() {
       ctx.key.transform.scaleX = worldToLocalScale(newWorld.scaleX, ctx.parentWorld ? ctx.parentWorld.scaleX : 1);
       ctx.key.transform.scaleY = worldToLocalScale(newWorld.scaleY, ctx.parentWorld ? ctx.parentWorld.scaleY : 1);
       render();
+      syncFloatToolbarFields();
       scheduleAutosave();
     };
     _naturalFieldDefs.forEach(f => {
@@ -2565,6 +2732,7 @@ function renderEditFields() {
       const c2 = ensureCorrection(currentEntityIdx, selected.kind, selected.id, currentAnim.name, editScope);
       c2[f.ckey] = newVal;
       render();
+      syncFloatToolbarFields();
       scheduleAutosave();
     });
   });
@@ -2937,8 +3105,22 @@ function restoreSnapshot(snapJson) {
   const idx = currentEntity.animations.indexOf(currentAnim);
   animSelect.value = idx >= 0 ? idx : 0;
   document.getElementById('startOffsetInput').value = getStartOffset(currentAnim);
-  selected = null; updateEditPanel();
+  // Undo/redo in this app only ever changes numeric transform/correction
+  // values or which image a keyframe points at -- it never adds or removes
+  // a bone/sprite -- so the previously-selected item still exists in the
+  // restored animation almost always. Keep it selected (instead of
+  // unconditionally clearing it) so the floating toolbar and edit panel
+  // stay put and immediately show the reverted/reapplied value, rather than
+  // silently vanishing on every undo click. Only clear it if it genuinely
+  // no longer exists (e.g. undo landed on a different animation/entity that
+  // doesn't have this id).
+  if (selected) {
+    const refs = collectRefsAcrossKeys(currentAnim.mainline);
+    const stillExists = selected.kind === 'bones' ? refs.bones.has(selected.id) : refs.objects.has(selected.id);
+    if (!stillExists) selected = null;
+  }
   render();
+  updateEditPanel();
   updateUndoRedoButtons();
 }
 function undo() {

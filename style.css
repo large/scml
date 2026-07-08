@@ -393,6 +393,23 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
 }
 .edit-fields-section.override-section .tf input { color: var(--warn); }
+.key-image-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  padding: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+}
+.key-image-thumb {
+  width: 36px; height: 36px; flex: none; background: #0e0e0e; border-radius: 3px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.key-image-thumb img { max-width: 88%; max-height: 88%; object-fit: contain; }
+.key-image-info { flex: 1; min-width: 0; }
+.key-image-name {
+  font-size: 10px; font-family: var(--font-mono); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 3px;
+}
+.key-image-info .btn { height: 22px; padding: 0 8px; font-size: 10px; }
+.asset-grid.raw-grid .asset-card.pickable { cursor: pointer; }
+.asset-grid.raw-grid .asset-card.pickable:hover { border-color: var(--accent); background: var(--accent-faint); }
 .toggle-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; padding: 4px 0; font-size: 11px; color: var(--text); cursor: pointer;
