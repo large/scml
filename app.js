@@ -1406,18 +1406,17 @@ function wireTimelineEvents() {
   // does nothing. Delegation on the stable parent element survives.
   // (lock button removed — feature not used)
   document.querySelectorAll('.keyframe').forEach(kf => {
+    // Click both jumps the playhead to this key AND selects the bone/sprite
+    // that owns it -- previously only a double-click selected, so clicking a
+    // key while a *different* item (or nothing) was selected moved the
+    // playhead but left the edit panel/floating toolbar showing the old
+    // selection, which read as "clicking a keyframe does nothing."
     kf.addEventListener('click', (e) => {
       e.stopPropagation();
+      selected = { kind: kf.dataset.kind, id: kf.dataset.id };
       t = Number(kf.dataset.jumpTime);
       timeSlider.value = Math.round(t);
       playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
-      render();
-    });
-    kf.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      const kind = kf.dataset.kind;
-      const id = kf.dataset.id;
-      selected = { kind, id };
       updateEditPanel();
       render();
     });
@@ -1915,6 +1914,13 @@ function pickAt(mx, my) {
 let isPanning = false;
 let panStart = [0, 0];
 let panOffsetStart = [0, 0];
+// Set on a mousedown that hit nothing (no bone/sprite under the cursor).
+// Deselecting doesn't happen immediately -- see the mouseup handler below --
+// so that a drag which STARTS with a near-miss (trying to grab something
+// small and just missing it) doesn't wipe out the current selection and
+// close the floating toolbar out from under the user.
+let pendingDeselectStart = null;
+const CLICK_VS_DRAG_PX = 4;
 canvas.addEventListener('mousedown', (e) => {
   const rect0 = canvas.getBoundingClientRect();
   // Pan: only allowed in view mode (left click) or with middle-mouse / Alt+left in any mode.
@@ -1971,7 +1977,10 @@ canvas.addEventListener('mousedown', (e) => {
     updateEditPanel();
     render();
   } else {
-    selected = null; updateEditPanel(); render();
+    // Missed everything. Don't deselect yet -- see mouseup, which only
+    // deselects if this turns out to have been a genuine click (little/no
+    // movement), not an attempted drag that just missed its target.
+    pendingDeselectStart = [e.clientX, e.clientY];
   }
 });
 
@@ -2007,13 +2016,18 @@ canvas.addEventListener('mousemove', (e) => {
   updateEditPanel();
   render();
 });
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', (e) => {
   if (isPanning) {
     isPanning = false;
     canvas.style.cursor = editMode ? 'crosshair' : 'default';
   }
   if (dragMode) scheduleAutosave();
   dragMode = null; dragStart = null;
+  if (pendingDeselectStart) {
+    const moved = Math.hypot(e.clientX - pendingDeselectStart[0], e.clientY - pendingDeselectStart[1]);
+    pendingDeselectStart = null;
+    if (moved < CLICK_VS_DRAG_PX) { selected = null; updateEditPanel(); render(); }
+  }
 });
 
 window.addEventListener('keydown', (e) => {
