@@ -1358,7 +1358,13 @@ function applyTimelineHeaderWidth() {
     e.stopPropagation();
     const key = btn.dataset.toggleVisible;
     const wasHidden = trackVisible[key] === false;
-    trackVisible[key] = !wasHidden;
+    // Toggle: hidden -> visible (true), visible -> hidden (false). This was
+    // previously `!wasHidden`, which assigns the state the item is ALREADY
+    // in (visible stays true, hidden stays false) -- a no-op. Bones still
+    // worked despite it because the bone cascade below overwrites the root
+    // with the correct `targetState = wasHidden`; sprites have no cascade,
+    // so their eye button silently did nothing.
+    trackVisible[key] = wasHidden;
     // When hiding or showing a bone, cascade to all descendant bones + sprites.
     // Hide = turn them off; Show = turn them back on. This makes it possible
     // to switch a whole rig subtree with one click.
@@ -1452,6 +1458,15 @@ function updatePlayhead(laneW, anim) {
   const x = (t / anim.length) * laneW + headerW;
   ph.style.left = x + 'px';
   playheadX = x;
+  // The playhead is an absolutely-positioned SIBLING of #trackerView inside
+  // the scroll container, so its CSS `top: 0; bottom: 0` resolves against
+  // the container's VISIBLE height (clientHeight), not the scrollable
+  // content height -- meaning the line only covered the first screenful of
+  // rows and vanished entirely once you scrolled further down. Size it to
+  // the real content height (the tracker we just rebuilt) so it spans every
+  // row at any scroll position.
+  const tv = document.getElementById('trackerView');
+  if (tv && tlScroll) ph.style.height = Math.max(tv.offsetHeight, tlScroll.clientHeight) + 'px';
   const tc = document.getElementById('tlTimecode');
   const dur = document.getElementById('tlDuration');
   if (tc) tc.textContent = formatTimecode(t);
@@ -2084,6 +2099,57 @@ document.getElementById('stepFwdBtn').addEventListener('click', () => {
 document.getElementById('stepBackBtn').addEventListener('click', () => {
   t = Math.max(0, t - currentAnim.interval);
   timeSlider.value = t; playing = false; playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; render(); updateEditPanel();
+});
+
+// ---------- prev/next keyframe navigation ----------
+// Jumps the playhead to the previous/next keyframe of the SELECTED item's
+// own timeline; with nothing selected, jumps across the union of every
+// item's keyframe times. Wraps around at the ends (matches how the
+// animations themselves loop).
+function collectKeyframeJumpTimes() {
+  const times = new Set();
+  if (selected) {
+    const refs = collectRefsAcrossKeys(currentAnim.mainline);
+    const ref = (selected.kind === 'bones' ? refs.bones : refs.objects).get(selected.id);
+    const tl = ref ? currentAnim.timelines[ref.timeline] : null;
+    if (tl) for (const k of tl.keys) times.add(k.time);
+  }
+  if (times.size === 0) {
+    for (const tl of Object.values(currentAnim.timelines)) {
+      if (tl && tl.keys) for (const k of tl.keys) times.add(k.time);
+    }
+  }
+  return [...times].sort((a, b) => a - b);
+}
+function jumpToKeyframe(dir) {
+  const times = collectKeyframeJumpTimes();
+  if (!times.length) { toast('No keyframes in this animation.'); return; }
+  const EPS = 0.5;
+  let target;
+  if (dir > 0) {
+    target = times.find(x => x > t + EPS);
+    if (target === undefined) target = times[0]; // wrap to first
+  } else {
+    for (let i = times.length - 1; i >= 0; i--) { if (times[i] < t - EPS) { target = times[i]; break; } }
+    if (target === undefined) target = times[times.length - 1]; // wrap to last
+  }
+  t = target;
+  timeSlider.value = Math.round(t);
+  playing = false;
+  playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
+  render();
+  updateEditPanel();
+}
+document.getElementById('tlPrevKey').addEventListener('click', () => jumpToKeyframe(-1));
+document.getElementById('tlNextKey').addEventListener('click', () => jumpToKeyframe(1));
+window.addEventListener('keydown', (e) => {
+  if (e.key !== ',' && e.key !== '.') return;
+  // Never hijack typing in a text/number field or a modal.
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (document.querySelector('.modal-backdrop.show')) return;
+  e.preventDefault();
+  jumpToKeyframe(e.key === ',' ? -1 : 1);
 });
 playBtn.addEventListener('click', () => {
   playing = !playing;

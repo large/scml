@@ -249,7 +249,13 @@
           <h4>Row color &amp; state</h4>
           <div class="tl-legend-row"><span class="tl-legend-mark bonecolor"><span></span></span> Pink = bone · Blue = sprite</div>
           <div class="tl-legend-row"><span class="tl-legend-mark dim"><span></span></span> Dimmed = exists in the rig, but not part of the pose at the playhead</div>
+          <h4>Navigating keys</h4>
+          <p style="margin:0;">The ◀◆ / ◆▶ buttons (or the <b>,</b> and <b>.</b> keys) jump the playhead to the previous/next keyframe — of the selected item, or of any item when nothing is selected.</p>
         </div>
+      </div>
+      <div class="tl-keynav">
+        <button class="tl-legend-btn" id="tlPrevKey" type="button" title="Previous keyframe (,) — selected item, or any item if nothing is selected"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="10 12 17 5 17 19"/><rect x="5" y="10" width="4" height="4" transform="rotate(45 7 12)"/></svg></button>
+        <button class="tl-legend-btn" id="tlNextKey" type="button" title="Next keyframe (.) — selected item, or any item if nothing is selected"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="14 12 7 5 7 19"/><rect x="15" y="10" width="4" height="4" transform="rotate(45 17 12)"/></svg></button>
       </div>
       <div class="tl-info">
         <span id="tlTimecode">00:00:000</span>

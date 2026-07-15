@@ -577,6 +577,10 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 }
 .tl-legend-mark.dim > span { opacity: 0.3; }
 .tl-legend-mark.bonecolor > span { background: var(--keyframe-bone); }
+/* Prev/next keyframe jump buttons, next to the Legend button. */
+.tl-keynav { display: flex; align-items: center; gap: 2px; }
+.tl-keynav .tl-legend-btn { padding: 0 6px; }
+.tl-keynav .tl-legend-btn svg { width: 15px; height: 15px; }
 #timelineScroll { flex: 1; overflow: auto; position: relative; background: var(--bg); min-height: 0; }
 #trackerView { display: flex; flex-direction: column; position: relative; min-width: 100%; }
 .track-row {
