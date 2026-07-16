@@ -289,9 +289,38 @@
         <input type="file" id="loadEditsFile" accept="application/json">
       </div>
       <button class="btn full" id="exportViewer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export fixed viewer (.html)</button>
+      <button class="btn full" id="spineExportOpen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v8"/><path d="m8 6 4 4 4-4"/><rect x="3" y="14" width="18" height="8" rx="2"/></svg> Export to Spine (.json + .atlas + .png)</button>
     </div>
     <div class="modal-footer">
       <button class="btn subtle" id="closeFileModal2">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="spineExportModal" class="modal-backdrop">
+  <div class="modal-box" style="width:min(460px,90vw);">
+    <div class="modal-header">
+      <span>Export to Spine</span>
+      <button class="modal-close" id="closeSpineExport"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="hint">Converts the current entity into the three files a Spine runtime (spine-flutter, spine-unity, …) loads: a skeleton <b>.json</b>, a texture <b>.atlas</b>, and one packed <b>.png</b> page. Every animation is included. Pick the Spine version matching your runtime — spine-flutter's latest is 4.3, and runtimes only accept files whose major.minor version matches. The mapping and its limits are documented in docs/SPINE_EXPORT.md; to get a binary .skel instead of .json, run the output through SpineSkeletonDataConverter.</div>
+      <div class="field-row">
+        <span class="label">Spine version</span>
+        <select id="spineVersion" class="full-select" style="flex:1;">
+          <option value="4.2" selected>4.2 (works with the json↔skel converter)</option>
+          <option value="4.3">4.3 (latest spine-flutter)</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <span class="label">File name</span>
+        <input type="text" id="spineBaseName" class="full-input" style="flex:1;" placeholder="skeleton">
+      </div>
+      <button class="btn full primary" id="spineExportBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export 3 files</button>
+      <div class="hint" id="spineExportStatus"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn subtle" id="closeSpineExport2">Close</button>
     </div>
   </div>
 </div>
@@ -453,6 +482,7 @@
   <script src="data.js"></script>
   <script src="corrections.js"></script>
   <script src="app.js"></script>
+  <script src="spine_export.js"></script>
 
 </body>
 </html>

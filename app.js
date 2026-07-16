@@ -569,8 +569,17 @@ function normalizeAnimTime(anim, timeMs) {
   return t;
 }
 
-function computeFrame(entityIdx, anim, rawTimeMs) {
-  const timeMs = normalizeAnimTime(anim, rawTimeMs);
+// opts.skipCorrections: compute the pose from the raw authored keyframe data
+// only, ignoring the dx/dy override-correction layer. Used by the Spine
+// export, which exports the authored rig (overrides are a view-layer tweak,
+// not part of the keyframe data).
+// opts.rawTime: treat rawTimeMs as an absolute authored time -- clamp to the
+// animation length but do NOT apply the tool's per-animation start-offset
+// shift (also export-only; Spine has no such concept).
+function computeFrame(entityIdx, anim, rawTimeMs, opts = {}) {
+  const timeMs = opts.rawTime
+    ? Math.max(0, Math.min(rawTimeMs, anim.length))
+    : normalizeAnimTime(anim, rawTimeMs);
   const looping = anim.looping !== false;
   const mkey = getMainlineKeys(anim, timeMs);
   const boneWorld = {};
@@ -583,7 +592,7 @@ function computeFrame(entityIdx, anim, rawTimeMs) {
       const tl = anim.timelines[br.timeline];
       const local = getTimelineValueAt(tl, br.key, timeMs, anim.length, looping);
       let world = br.parent !== null ? applyParentTransform(local, boneWorld[br.parent]) : { ...local };
-      world = applyCorrection(world, getCorrection(entityIdx, 'bones', br.id, anim.name));
+      if (!opts.skipCorrections) world = applyCorrection(world, getCorrection(entityIdx, 'bones', br.id, anim.name));
       boneWorld[br.id] = world;
       remaining.splice(i, 1);
     }
@@ -592,8 +601,8 @@ function computeFrame(entityIdx, anim, rawTimeMs) {
     const tl = anim.timelines[orf.timeline];
     const local = getTimelineValueAt(tl, orf.key, timeMs, anim.length, looping);
     let world = orf.parent !== null ? applyParentTransform(local, boneWorld[orf.parent]) : { ...local };
-    world = applyCorrection(world, getCorrection(entityIdx, 'objects', orf.id, anim.name));
-    return { id: orf.id, zIndex: orf.z_index, folder: local.folder, file: local.file, world };
+    if (!opts.skipCorrections) world = applyCorrection(world, getCorrection(entityIdx, 'objects', orf.id, anim.name));
+    return { id: orf.id, zIndex: orf.z_index, folder: local.folder, file: local.file, world, timeline: orf.timeline };
   }).sort((a, b) => a.zIndex - b.zIndex);
   return { boneWorld, objects, boneRefs: mkey.bone_refs };
 }
