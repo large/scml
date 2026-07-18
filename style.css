@@ -577,6 +577,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 }
 .tl-legend-mark.dim > span { opacity: 0.3; }
 .tl-legend-mark.bonecolor > span { background: var(--keyframe-bone); }
+.tl-legend-mark.greyed > span { background: #555; }
 /* Prev/next keyframe jump buttons, next to the Legend button. */
 .tl-keynav { display: flex; align-items: center; gap: 2px; }
 .tl-keynav .tl-legend-btn { padding: 0 6px; }
@@ -641,8 +642,16 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .track-row.dim { opacity: 0.28; }
 .track-row.dim:hover { opacity: 0.6; }
 .track-row .keyframe.dim { opacity: 0.25; }
-.track-row.hidden { opacity: 0.4; }
+/* Hidden rows (per-row eye off, or the whole kind switched off in View →
+   Show bones/sprites): a proper grey "disabled" look, not just a fade --
+   the pink/blue identity colors drop to grey so hidden rows read as
+   inactive at a glance. */
+.track-row.hidden { opacity: 0.55; }
 .track-row.hidden .track-lane-bg { background: transparent !important; border-left-color: var(--border-subtle) !important; }
+.track-row.hidden .track-header .name-color { background: #555 !important; }
+.track-row.hidden .track-header .track-name { color: var(--text-faint); }
+.track-row.hidden .keyframe { background: #555 !important; box-shadow: none !important; }
+.track-row.hidden .keyframe.swap::after { border-color: transparent #555 transparent transparent !important; }
 .track-row.locked .track-name { color: var(--text-muted); }
 .track-icon-btn.off { color: var(--text-faint); opacity: 0.5; }
 .track-icon-btn.lock.on { color: var(--warn); }

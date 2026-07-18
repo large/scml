@@ -1202,12 +1202,22 @@ function renderTracker(entityIdx, entity, anim, timeMs) {
   }
   ruler += '</div></div>';
 
+  // The View section's global "Show bones"/"Show sprites" toggles hide
+  // whole kinds from the canvas -- rows of a hidden kind grey out in the
+  // timeline exactly like individually eye-hidden rows, so the timeline
+  // always reflects what's actually drawn.
+  const showBonesEl = document.getElementById('showBones');
+  const showSpritesEl = document.getElementById('showSprites');
+  const bonesShownGlobally = !showBonesEl || showBonesEl.checked;
+  const spritesShownGlobally = !showSpritesEl || showSpritesEl.checked;
+
   let rows = '';
   for (const c of channels) {
     const isSel = selKey() === c.kind + ':' + c.id;
     const visibleKey = c.kind + ':' + c.id;
     const isActive = c.kind === 'bones' ? activeBoneIds.has(c.id) : activeObjectIds.has(c.id);
     const dimClass = isActive ? '' : ' dim';
+    const kindShownGlobally = c.kind === 'bones' ? bonesShownGlobally : spritesShownGlobally;
     const isVisible = trackVisible[visibleKey] !== false;
     const ref = (c.kind === 'bones' ? refs.bones : refs.objects).get(c.id);
     const tl = ref ? anim.timelines[ref.timeline] : null;
@@ -1252,10 +1262,15 @@ function renderTracker(entityIdx, entity, anim, timeMs) {
       ? '<span class="tree-guide ' + (hasChildren ? 'has-child' : 'is-leaf') + '"></span>'
       : '<span class="tree-guide is-leaf" style="opacity:0.5;"></span>';
     const isLocked = false; // lock feature removed
-    const hiddenClass = isVisible ? '' : ' hidden';
+    // Grey the row whenever the item isn't actually drawn -- either its own
+    // eye is off, or its whole kind is switched off in View.
+    const hiddenClass = (isVisible && kindShownGlobally) ? '' : ' hidden';
     const lockedClass = '';
     const allClasses = dimClass + hiddenClass;
-    const eyeTitle = isVisible ? 'Hide track' : 'Show track';
+    let eyeTitle = isVisible ? 'Hide track' : 'Show track';
+    if (!kindShownGlobally) {
+      eyeTitle = 'Hidden by View → Show ' + (isBone ? 'bones' : 'sprites') + (isVisible ? '' : ' (and by this eye)');
+    }
     const eyeIcon = isVisible ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>' : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
     const lockIcon = '';
     const unlockIcon = '';
