@@ -18,7 +18,6 @@
     <div class="tb-menu">
       <button class="tb-menu-item" id="tmFile">File</button>
       <button class="tb-menu-item" id="tmAssets">Assets</button>
-      <button class="tb-menu-item" id="tmNewAnim">+ Animation</button>
       <button class="tb-menu-item" id="tmSheet">Spritesheet</button>
       <button class="tb-menu-item" id="tmProject">Project</button>
     </div>
@@ -40,6 +39,7 @@
           <div class="field-row">
             <span class="label">Anim</span>
             <select id="animSelect" class="full-select" style="flex:1;"></select>
+            <button class="mini-add-btn" id="projNewAnimBtn" type="button" title="New animation (clone an existing one as a starting point)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
           </div>
         </div>
       </section>
@@ -105,6 +105,7 @@
 
     <main id="centerPanel">
       <section id="previewArea" style="grid-row: 1 / -1;">
+        <div id="canvasRow">
         <div id="canvasWrap">
           <div id="status"></div>
           <div id="toast"></div>
@@ -112,8 +113,9 @@
           <canvas id="canvas" width="900" height="900"></canvas>
           <div id="floatToolbar">
             <div id="floatToolbarHandle">
-              <span>⠿</span>
+              <span class="ft-grip">⠿</span>
               <span class="title" id="floatToolbarTitle">Nothing selected</span>
+              <button id="floatToolbarPin" class="ft-pin" type="button" title="Pin as a side panel next to the canvas / unpin to float over it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
             </div>
             <div class="ft-body">
               <div class="ft-icons">
@@ -166,6 +168,8 @@
             </div>
             <div class="ft-resize-handle" title="Drag to resize"></div>
           </div>
+        </div>
+        <div id="editDock"></div>
         </div>
         <div id="previewControls">
           <div class="pc-group">
@@ -317,6 +321,15 @@
         <span class="label">File name</span>
         <input type="text" id="spineBaseName" class="full-input" style="flex:1;" placeholder="skeleton">
       </div>
+      <div class="field-row">
+        <span class="label">Atlas resolution</span>
+        <select id="spineAtlasScale" class="full-select" style="flex:1;">
+          <option value="1">100% — source pixels (~3 pages of 4096² for this project)</option>
+          <option value="0.5" selected>50% — quarter the memory, 1 page (recommended)</option>
+          <option value="0.25">25% — smallest, for tiny on-screen characters</option>
+        </select>
+      </div>
+      <div class="hint">Sprites render at the same world size either way — a smaller atlas just samples fewer texels. This project's art is ~33 megapixels of nearly solid pixels (only ~2% is trimmable transparency), so resolution is the lever that actually shrinks the sheets.</div>
       <button class="btn full primary" id="spineExportBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export 3 files</button>
       <div class="hint" id="spineExportStatus"></div>
     </div>
@@ -378,19 +391,19 @@
 <div id="loadProjectModal" class="modal-backdrop">
   <div class="modal-box" style="width:min(460px,90vw);">
     <div class="modal-header">
-      <span>Load a different SCML project</span>
+      <span>Load a project (SCML or Spine)</span>
       <button class="modal-close" id="closeLoadProjectModal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg></button>
     </div>
     <div class="modal-body">
       <div class="field-row" style="flex-direction:column;align-items:stretch;gap:4px;">
-        <span class="label">.scml file</span>
-        <input type="file" id="loadScmlFile" accept=".scml,text/xml,application/xml">
+        <span class="label">Project file — Spriter .scml, or a Spine skeleton .json (4.x)</span>
+        <input type="file" id="loadScmlFile" accept=".scml,.json,text/xml,application/xml,application/json">
       </div>
       <div class="field-row" style="flex-direction:column;align-items:stretch;gap:4px;">
-        <span class="label">Image parts (folder or multi-select PNGs)</span>
+        <span class="label">The rest of it (folder or multi-select): PNG parts — for Spine, the .atlas + its page PNGs</span>
         <input type="file" id="loadImagesFiles" multiple webkitdirectory directory>
       </div>
-      <div class="hint" id="imageFolderHint">Some browsers don't support picking a whole folder — if so, this will just let you multi-select files instead; that's fine, matching is done by filename.</div>
+      <div class="hint" id="imageFolderHint">Some browsers don't support picking a whole folder — if so, this will just let you multi-select files instead; that's fine, matching is done by filename. Loaded projects are persisted — a reload continues where you left off.</div>
       <div id="loadStatus" class="hint"></div>
       <div class="credit">Bone composition cross-checked against the SpriterDotNet reference implementation.</div>
     </div>
@@ -418,6 +431,12 @@
         <div id="assetGrid" class="asset-grid"></div>
       </div>
       <div id="amRawPane" style="display:none;">
+        <div class="am-raw-toolbar">
+          <input type="text" id="amNewGroupName" class="full-input" placeholder="new group name (e.g. props)" style="flex:1;max-width:220px;">
+          <button class="btn subtle" id="amNewGroupBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New group</button>
+          <span class="hint" style="margin:0;">Add PNGs into any group with its + button — they become usable via "Change image…" and are packed into Spine exports.</span>
+          <input type="file" id="amAddImagesInput" accept="image/png,image/webp,image/jpeg" multiple style="display:none;">
+        </div>
         <div class="hint">Every individual PNG declared in this project's &lt;folder&gt; tags — the raw material, independent of whether or how it's currently wired into the rig. Sprites with a dimmed "not used" badge exist in the file but aren't referenced by any animation yet.</div>
         <div id="rawAssetGrid" class="asset-grid"></div>
       </div>

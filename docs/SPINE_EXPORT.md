@@ -1,4 +1,4 @@
-# Exporting to Spine (4.2 / 4.3)
+# Spine (4.2 / 4.3): export and import
 
 **File → Export to Spine** converts the current entity into the three things a
 [Spine](https://esotericsoftware.com/) runtime loads:
@@ -14,6 +14,30 @@ validated against — **Spine 4.2 and 4.3**; pick the version matching your
 runtime, because Spine runtimes only accept files whose `major.minor` version
 matches their own (spine-flutter's latest is 4.3; 4.2 runtimes are still
 common and 4.2 files also work with the json↔skel converter below).
+
+**Importing works too**: File → Project accepts a Spine skeleton `.json`
+together with its `.atlas` and page PNG(s) — the atlas is sliced back into
+individual images, bones/slots/attachments become the editor's rig, and
+rotate/translate/scale, attachment, alpha, and drawOrder timelines become
+editable keyframes. Verified by round-trip: exporting the built-in
+character and re-importing the produced files reproduces every sampled
+pose, image, and draw order exactly (339/339). Meshes, IK/physics
+constraints, and non-default skins have no SCML counterpart and are
+skipped with a console warning.
+
+## Why are the PNG pages big, and how to shrink them
+
+The built-in project's source art is **~33 megapixels** across 56 images
+(individual body parts are 1300–1700 px wide), and only ~2% of that is
+trimmable transparent margin — so at full resolution the pages genuinely
+need ~3 × 4096² of pixels. That's the source, not packing waste.
+
+The **Atlas resolution** option in the export dialog is the lever that
+matters: it scales the *packed pixels* while attachments keep their source
+dimensions, so sprites render at exactly the same world size — just from
+fewer texels. For this project: 100% → three 4096² pages, **50% → one page
+(the default)**, 25% → a single 4096×1024. Use 100% only if the character
+is shown near full-size on screen.
 
 ## Using it with spine-flutter
 

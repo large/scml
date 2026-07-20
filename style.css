@@ -172,6 +172,35 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 /* CENTER */
 #centerPanel { display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; background: var(--bg); }
 #previewArea { display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+/* Canvas and the (pinnable) edit panel sit side by side; playback controls
+   stay full-width below. */
+#canvasRow { flex: 1; display: flex; flex-direction: row; min-height: 0; min-width: 0; }
+#editDock {
+  display: none; flex: none; width: 280px; min-height: 0;
+  border-left: 1px solid var(--border); background: var(--bg-panel);
+  overflow-y: auto; overflow-x: hidden;
+}
+#editDock.show { display: flex; flex-direction: column; }
+/* Pinned: the edit window stops floating over the canvas and becomes a
+   plain docked column inside #editDock. */
+#floatToolbar.pinned {
+  position: static !important; width: auto !important; height: auto !important;
+  min-width: 0; min-height: 0; flex: 1;
+  border: none; border-radius: 0; box-shadow: none; resize: none;
+  background: transparent; backdrop-filter: none;
+}
+#floatToolbar.pinned #floatToolbarHandle { cursor: default; }
+#floatToolbar.pinned .ft-grip { display: none; }
+#floatToolbar.pinned .ft-resize-handle { display: none; }
+#floatToolbarHandle .ft-pin {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-left: auto; flex: none;
+  background: transparent; border: none; border-radius: 3px;
+  color: var(--text-muted); cursor: pointer; transition: all 120ms;
+}
+#floatToolbarHandle .ft-pin:hover { background: var(--bg-elevated); color: var(--text); }
+#floatToolbar.pinned #floatToolbarHandle .ft-pin { color: var(--accent); }
+#floatToolbarHandle .ft-pin svg { width: 12px; height: 12px; }
 #canvasWrap {
   flex: 1; position: relative; display: block;
   overflow: auto; min-height: 0; min-width: 0;
@@ -578,6 +607,17 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .tl-legend-mark.dim > span { opacity: 0.3; }
 .tl-legend-mark.bonecolor > span { background: var(--keyframe-bone); }
 .tl-legend-mark.greyed > span { background: #555; }
+/* Small square "+" button sitting behind a select (e.g. Project → Anim). */
+.mini-add-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: none;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 3px;
+  color: var(--text-secondary); cursor: pointer; transition: all 120ms;
+}
+.mini-add-btn:hover { color: var(--text); border-color: var(--accent); }
+.mini-add-btn svg { width: 12px; height: 12px; }
+.am-raw-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.am-folder-header .am-folder-add { margin-left: 6px; vertical-align: middle; }
 /* Prev/next keyframe jump buttons, next to the Legend button. */
 .tl-keynav { display: flex; align-items: center; gap: 2px; }
 .tl-keynav .tl-legend-btn { padding: 0 6px; }

@@ -1746,9 +1746,13 @@ function renderRawAssetGrid(entity) {
   const byFolder = {};
   for (const item of list) (byFolder[item.folderId] = byFolder[item.folderId] || []).push(item);
   let html = '';
-  for (const fid of Object.keys(byFolder).sort((a, b) => Number(a) - Number(b))) {
-    const items = byFolder[fid];
-    html += `<div class="am-folder-header">${items[0].folderName} <span style="font-weight:400;color:var(--text-faint);">(${items.length})</span></div>`;
+  // Iterate ALL folders (not just ones with assets) so a freshly created
+  // empty group is visible with its own "add images" button.
+  for (const fid of Object.keys(folders).sort((a, b) => Number(a) - Number(b))) {
+    const items = byFolder[fid] || [];
+    const folderName = folders[fid].name || ('folder ' + fid);
+    html += `<div class="am-folder-header">${folderName} <span style="font-weight:400;color:var(--text-faint);">(${items.length})</span>` +
+      `<button class="mini-add-btn am-folder-add" data-folder="${fid}" type="button" title="Add PNGs to “${String(folderName).replace(/"/g, '&quot;')}”"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div>`;
     for (const item of items) {
       const imgSrc = images[item.folder + '_' + item.file];
       const usedLabel = item.usedByNames.length ? 'used by: ' + item.usedByNames.join(', ')
@@ -1766,6 +1770,91 @@ function renderRawAssetGrid(entity) {
   const countEl = document.getElementById('amRawCount');
   if (countEl) countEl.textContent = list.length;
 }
+
+// ---------- user-added asset groups and images ----------
+// New folders ("groups") and PNGs live in the same folders/images structures
+// as the project's own -- so they show up in the image picker, get smart
+// names, pack into Spine exports, and persist with the project.
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('could not read ' + file.name));
+    r.readAsDataURL(file);
+  });
+}
+
+function nextNumericKey(obj) {
+  let max = -1;
+  for (const k of Object.keys(obj)) { const n = parseInt(k, 10); if (!isNaN(n) && n > max) max = n; }
+  return String(max + 1);
+}
+
+async function addImagesToFolder(folderId, fileList) {
+  const folder = folders[folderId];
+  if (!folder) return 0;
+  let added = 0;
+  for (const file of fileList) {
+    if (!/^image\//.test(file.type)) continue;
+    const dataUrl = await readFileAsDataURL(file);
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('broken image: ' + file.name)); img.src = dataUrl; });
+    const fileId = nextNumericKey(folder.files);
+    const base = file.name;
+    folder.files[fileId] = {
+      name: (folder.name ? folder.name + '/' : '') + base,
+      width: img.naturalWidth, height: img.naturalHeight,
+      // spec default pivot: (0, 1) -- same as the SCML parser uses when the
+      // attributes are omitted
+      pivot_x: 0, pivot_y: 1,
+    };
+    images[folderId + '_' + fileId] = dataUrl;
+    added++;
+  }
+  if (added) {
+    invalidateSmartNames(currentEntity);
+    renderAssetManager(currentEntity);
+    imagesDirty = true;
+    scheduleAutosave();
+  }
+  return added;
+}
+
+(function initAssetAdding() {
+  const grid = document.getElementById('rawAssetGrid');
+  const input = document.getElementById('amAddImagesInput');
+  const newGroupBtn = document.getElementById('amNewGroupBtn');
+  if (!grid || !input || !newGroupBtn) return;
+  let targetFolderId = null;
+  grid.addEventListener('click', (e) => {
+    const btn = e.target.closest('.am-folder-add');
+    if (!btn) return;
+    targetFolderId = btn.dataset.folder;
+    input.value = '';
+    input.click();
+  });
+  input.addEventListener('change', async () => {
+    if (!targetFolderId || !input.files || !input.files.length) return;
+    try {
+      const n = await addImagesToFolder(targetFolderId, [...input.files]);
+      toast(n ? `Added ${n} image(s) to “${folders[targetFolderId].name}”.` : 'No usable images in that selection.');
+    } catch (err) {
+      toast('Adding images failed: ' + err.message);
+    }
+  });
+  newGroupBtn.addEventListener('click', () => {
+    const nameEl = document.getElementById('amNewGroupName');
+    const name = (nameEl.value || '').trim().replace(/[\\/]+/g, '_');
+    if (!name) { toast('Give the new group a name first.'); return; }
+    if (Object.values(folders).some(f => f.name === name)) { toast(`A group called “${name}” already exists.`); return; }
+    const fid = nextNumericKey(folders);
+    folders[fid] = { name, files: {} };
+    nameEl.value = '';
+    renderAssetManager(currentEntity);
+    scheduleAutosave();
+    toast(`Group “${name}” created — use its + button to add PNGs.`);
+  });
+})();
 
 // ---------- image picker (assign a different PNG to the selected keyframe) ----------
 // Reuses the same raw-asset listing as the Asset Manager's Raw assets tab
@@ -1837,7 +1926,7 @@ document.getElementById('reorderBottom').addEventListener('click', () => moveSel
 document.getElementById('tmFile').addEventListener('click', () => document.getElementById('fileModal').classList.add('show'));
 document.getElementById('closeFileModal').addEventListener('click', () => document.getElementById('fileModal').classList.remove('show'));
 
-document.getElementById('tmNewAnim').addEventListener('click', () => document.getElementById('newAnimModal').classList.add('show'));
+document.getElementById('projNewAnimBtn').addEventListener('click', () => document.getElementById('newAnimModal').classList.add('show'));
 document.getElementById('closeNewAnimModal').addEventListener('click', () => document.getElementById('newAnimModal').classList.remove('show'));
 
 document.getElementById('tmSheet').addEventListener('click', () => document.getElementById('sheetConfigModal').classList.add('show'));
@@ -2843,8 +2932,41 @@ function renderEditFields() {
 let floatToolbarUserOffset = null; // {dx, dy} in content pixels, or null for pure auto-position
 let floatToolbarLastSelKey = null;
 
+// ---------- pin: dock the edit window beside the canvas ----------
+// Pinned (the default), the edit window lives in #editDock as a normal side
+// panel -- always in the same place, never covering the artwork. Unpinned,
+// it floats over the canvas and follows the selected item like before.
+const FT_PIN_KEY = 'scml_ft_pinned_v1';
+let floatToolbarPinned = true;
+try { const v = localStorage.getItem(FT_PIN_KEY); if (v !== null) floatToolbarPinned = v === '1'; } catch (e) {}
+
+function applyFloatToolbarPin() {
+  const bar = document.getElementById('floatToolbar');
+  const dock = document.getElementById('editDock');
+  const wrap = document.getElementById('canvasWrap');
+  if (floatToolbarPinned) {
+    if (bar.parentElement !== dock) dock.appendChild(bar);
+    bar.classList.add('pinned');
+  } else {
+    if (bar.parentElement !== wrap) wrap.appendChild(bar);
+    bar.classList.remove('pinned');
+    dock.classList.remove('show');
+  }
+  positionFloatToolbar();
+}
+
 function positionFloatToolbar() {
   const bar = document.getElementById('floatToolbar');
+  const dock = document.getElementById('editDock');
+  if (floatToolbarPinned) {
+    // Docked: the panel shows whenever edit mode is on (with "Nothing
+    // selected" until something is picked); no canvas-following at all.
+    const show = editMode;
+    dock.classList.toggle('show', show);
+    bar.style.display = show ? 'flex' : 'none';
+    if (!editMode || !selected) floatToolbarLastSelKey = null;
+    return;
+  }
   if (!editMode || !selected || !lastPivotById[selKey()]) { bar.style.display = 'none'; floatToolbarLastSelKey = null; return; }
   bar.style.display = 'flex';
   if (selKey() !== floatToolbarLastSelKey) {
@@ -2925,6 +3047,7 @@ document.getElementById('ftScale').addEventListener('click', () => toast('Drag t
     if (typeof saved.height === 'number') bar.style.height = saved.height + 'px';
   } catch (e) {}
   function saveSize() {
+    if (floatToolbarPinned) return; // docked size is the dock's, not the float size
     try {
       const rect = bar.getBoundingClientRect();
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ width: rect.width, height: rect.height }));
@@ -2932,6 +3055,8 @@ document.getElementById('ftScale').addEventListener('click', () => toast('Drag t
   }
   let dragging = false, startMouse = [0, 0], startOffset = { dx: 0, dy: 0 };
   handle.addEventListener('mousedown', (e) => {
+    if (e.target.closest('#floatToolbarPin')) return; // pin click, not a drag
+    if (floatToolbarPinned) return; // docked panels don't drag
     e.stopPropagation();
     dragging = true;
     startMouse = [e.clientX, e.clientY];
@@ -2950,6 +3075,22 @@ document.getElementById('ftScale').addEventListener('click', () => toast('Drag t
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(saveSize).observe(bar);
   }
+  document.getElementById('floatToolbarPin').addEventListener('click', (e) => {
+    e.stopPropagation();
+    floatToolbarPinned = !floatToolbarPinned;
+    try { localStorage.setItem(FT_PIN_KEY, floatToolbarPinned ? '1' : '0'); } catch (err) {}
+    if (!floatToolbarPinned) {
+      // restore the saved floating size (the pinned state wipes inline sizing)
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        bar.style.width = typeof saved.width === 'number' ? saved.width + 'px' : '';
+        bar.style.height = typeof saved.height === 'number' ? saved.height + 'px' : '';
+      } catch (err) { bar.style.width = ''; bar.style.height = ''; }
+    }
+    applyFloatToolbarPin();
+    toast(floatToolbarPinned ? 'Edit panel pinned beside the canvas.' : 'Edit panel unpinned — it floats and follows the selection.');
+  });
+  applyFloatToolbarPin();
 })();
 
 document.getElementById('ftFlipX').addEventListener('click', () => {
@@ -3233,63 +3374,161 @@ function updateUndoRedoButtons() {
   if (r) r.disabled = redoStack.length === 0;
 }
 
-// ---------- autosave (localStorage) ----------
-// This is a real downloaded HTML file running in the person's own browser, not a
-// sandboxed preview, so localStorage is available and is exactly the right tool for
-// "don't lose an hour of re-posing work if the tab reloads." Only the built-in
-// Explorer project is autosaved automatically (a freshly loaded custom project's
-// images are session-only blob URLs that can't survive a reload anyway); if you're
-// working on a custom project, use "Save edits" manually instead.
-const AUTOSAVE_KEY = 'scml_viewer_autosave_v1';
+// ---------- persistence (IndexedDB) ----------
+// A hard reload must land the user EXACTLY where they left off -- including
+// keyframe edits (which live in `entities`), a loaded custom project, and
+// any assets they added. That's multi-megabyte state, so it goes to
+// IndexedDB (localStorage tops out around 5MB and used to hold only the
+// correction layer, which is why reloads snapped back to the built-in
+// project). Every edit schedules a debounced full save; boot restores it
+// automatically. A beforeunload guard covers the sub-second window where an
+// edit hasn't hit the database yet.
+const AUTOSAVE_KEY = 'scml_viewer_autosave_v1'; // legacy localStorage key, migrated below
+const IDB_NAME = 'scml_editor_v1', IDB_STORE = 'project', IDB_RECORD = 'current';
 let autosaveTimer = null;
 let usingCustomProject = false;
+let currentProjectLabel = '';
 let stateVersion = 0; // bumped on every meaningful edit; used to invalidate the anim-bbox cache below
+let persistDirty = false;  // an edit exists that hasn't reached IndexedDB yet
+let imagesDirty = false;   // the folders/images set changed (assets added / project loaded)
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open(IDB_NAME, 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore(IDB_STORE);
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+function idbGet(db) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(IDB_RECORD);
+    tx.onsuccess = () => resolve(tx.result || null);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbPut(db, value) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, IDB_RECORD);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbClear() {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(IDB_RECORD);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  })).catch(() => {});
+}
+
+// Only images beyond the built-in set need storing for the embedded
+// project (its own images ship in data.js); a custom project's images are
+// all its own.
+function collectPersistableImages() {
+  if (usingCustomProject) return { ...images };
+  const out = {};
+  for (const k of Object.keys(images)) {
+    if (!(k in DEFAULT_DATA.images)) out[k] = images[k];
+  }
+  return out;
+}
 
 function scheduleAutosave() {
   stateVersion++;
-  if (usingCustomProject) return;
+  persistDirty = true;
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ savedAt: Date.now(), state: currentAppState() }));
-    } catch (e) { /* storage full or unavailable -- silently skip, nothing else to do */ }
-  }, 600);
+  autosaveTimer = setTimeout(persistProjectState, 600);
 }
 
-function checkForAutosave() {
-  let raw;
-  try { raw = localStorage.getItem(AUTOSAVE_KEY); } catch (e) { return; }
-  if (!raw) return;
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch (e) { return; }
-  if (!parsed || !parsed.state) return;
-  const banner = document.getElementById('autosaveBanner');
-  const ageMin = Math.round((Date.now() - (parsed.savedAt || 0)) / 60000);
-  banner.querySelector('span').textContent = `Found autosaved work from ${ageMin < 1 ? 'less than a minute ago' : ageMin + ' minute(s) ago'}.`;
-  banner.classList.add('show');
-  document.getElementById('restoreAutosave').onclick = () => {
-    const s = parsed.state;
-    corrections = s.corrections || {};
-    animStartOffsets = s.animStartOffsets || {};
-    colorFilters = Array.isArray(s.colorFilters) ? s.colorFilters : [];
-    boneNames = s.boneNames || {};
-    objectNames = s.objectNames || {};
-    filterIdCounter = colorFilters.length ? Math.max(...colorFilters.map(f => f.id || 0)) + 1 : 1;
-    applyAddedAnimations(s.addedAnimations);
-    Object.keys(filteredImgCache).forEach(k => delete filteredImgCache[k]);
-    renderFilterList();
-    populateAnims();
-    document.getElementById('startOffsetInput').value = getStartOffset(currentAnim);
-    selected = null; updateEditPanel(); render();
-    banner.classList.remove('show');
-    toast('Autosaved work restored.');
-  };
-  document.getElementById('discardAutosave').onclick = () => {
-    try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) {}
-    banner.classList.remove('show');
-  };
+async function persistProjectState() {
+  try {
+    const record = {
+      savedAt: Date.now(),
+      custom: usingCustomProject,
+      label: currentProjectLabel,
+      entities,
+      folders,
+      appState: currentAppState(),
+    };
+    const db = await idbOpen();
+    if (imagesDirty) {
+      record.images = collectPersistableImages();
+    } else {
+      const prev = await idbGet(db);
+      if (prev && prev.images) record.images = prev.images;
+    }
+    await idbPut(db, record);
+    persistDirty = false;
+    imagesDirty = false;
+  } catch (e) {
+    // storage unavailable/full -- keep persistDirty so beforeunload warns
+    console.warn('autosave to IndexedDB failed:', e);
+  }
 }
-checkForAutosave();
+
+function applyAppStateSnapshot(s) {
+  corrections = s.corrections || {};
+  animStartOffsets = s.animStartOffsets || {};
+  colorFilters = Array.isArray(s.colorFilters) ? s.colorFilters : [];
+  boneNames = s.boneNames || {};
+  objectNames = s.objectNames || {};
+  filterIdCounter = colorFilters.length ? Math.max(...colorFilters.map(f => f.id || 0)) + 1 : 1;
+  applyAddedAnimations(s.addedAnimations);
+  Object.keys(filteredImgCache).forEach(k => delete filteredImgCache[k]);
+  renderFilterList();
+  populateAnims();
+  document.getElementById('startOffsetInput').value = getStartOffset(currentAnim);
+  selected = null; updateEditPanel(); render();
+}
+
+async function restorePersistedProject() {
+  let record = null;
+  try { record = await idbGet(await idbOpen()); } catch (e) { /* no IDB -- fall through */ }
+
+  if (!record) {
+    // one-time migration from the old localStorage autosave (corrections only)
+    let legacy = null;
+    try { legacy = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch (e) {}
+    if (legacy && legacy.state) {
+      applyAppStateSnapshot(legacy.state);
+      try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) {}
+      scheduleAutosave();
+      toast('Restored your previous edits.');
+    }
+    return;
+  }
+  try {
+    if (record.custom) {
+      loadProject(record.folders, record.entities, record.images || {}, record.label || 'restored project', true);
+      currentProjectLabel = record.label || '';
+    } else {
+      folders = record.folders || folders;
+      entities = record.entities || entities;
+      images = Object.assign({}, DEFAULT_DATA.images, record.images || {});
+      Object.keys(imgCache).forEach(k => delete imgCache[k]);
+      currentEntityIdx = Math.min(currentEntityIdx, entities.length - 1);
+      currentEntity = entities[currentEntityIdx];
+      populateAnims();
+      setAnim(Math.min(Number(animSelect.value) || 0, currentEntity.animations.length - 1));
+    }
+    applyAppStateSnapshot(record.appState || {});
+    const ageMin = Math.round((Date.now() - (record.savedAt || 0)) / 60000);
+    toast(`Continued where you left off (${ageMin < 1 ? 'moments' : ageMin + ' min'} ago). File → Project → "Reset to built-in" starts fresh.`);
+  } catch (e) {
+    console.warn('restoring persisted project failed:', e);
+  }
+}
+restorePersistedProject();
+
+// The debounce means an edit can sit unsaved for up to ~a second (or
+// indefinitely if IndexedDB is unavailable) -- warn before the tab goes away
+// while that's the case.
+window.addEventListener('beforeunload', (e) => {
+  if (persistDirty) { e.preventDefault(); e.returnValue = ''; }
+});
 
 // ---------- inject a resize handle into every modal so the user can drag
 // the bottom-right corner to resize any popup ----------
@@ -3633,7 +3872,9 @@ function parseSCML(xmlText) {
   return { folders, entities };
 }
 
-function buildImageMap(folders, fileList) {
+// Images are stored as DATA urls (not object URLs) so a loaded custom
+// project can be persisted to IndexedDB and survive a reload.
+async function buildImageMap(folders, fileList) {
   const byBase = {};
   const relEntries = [];
   for (const file of fileList) {
@@ -3651,7 +3892,7 @@ function buildImageMap(folders, fileList) {
       let match = relEntries.find(({ rel }) => rel === declared || rel.endsWith('/' + declared));
       let file = match ? match.file : byBase[base];
       if (!file) { missing.push(declared); continue; }
-      images[fid + '_' + fileId] = URL.createObjectURL(file);
+      images[fid + '_' + fileId] = await readFileAsDataURL(file);
     }
   }
   return { images, missing };
@@ -3716,29 +3957,54 @@ document.getElementById('createAnimBtn').addEventListener('click', () => {
 
 
 document.getElementById('loadProjectBtn').addEventListener('click', async () => {
-  const scmlFile = document.getElementById('loadScmlFile').files[0];
-  const imgFiles = document.getElementById('loadImagesFiles').files;
+  const mainFile = document.getElementById('loadScmlFile').files[0];
+  const extraFiles = [...(document.getElementById('loadImagesFiles').files || [])];
   const statusEl = document.getElementById('loadStatus');
-  if (!scmlFile) { statusEl.textContent = 'Pick a .scml file first.'; return; }
-  if (!imgFiles || imgFiles.length === 0) { statusEl.textContent = 'Pick the image parts too (folder or multi-select).'; return; }
+  if (!mainFile) { statusEl.textContent = 'Pick a .scml or Spine .json file first.'; return; }
   try {
-    const xmlText = await scmlFile.text();
-    const { folders: newFolders, entities: newEntities } = parseSCML(xmlText);
-    const { images: newImages, missing } = buildImageMap(newFolders, imgFiles);
-    loadProject(newFolders, newEntities, newImages, scmlFile.name, true);
+    let result;
+    if (/\.json$/i.test(mainFile.name)) {
+      // Spine skeleton JSON: needs its .atlas and page PNGs alongside
+      // (picked via the second input -- folder or multi-select).
+      const jsonObj = JSON.parse(await mainFile.text());
+      if (!jsonObj.skeleton || !jsonObj.bones) throw new Error('this .json is not a Spine skeleton export');
+      const atlasFile = extraFiles.find(f => /\.atlas$/i.test(f.name));
+      if (!atlasFile) throw new Error('also select the .atlas file (and its .png pages) in the second picker');
+      statusEl.textContent = 'Importing Spine project…';
+      result = await importSpineProject(jsonObj, await atlasFile.text(), extraFiles, mainFile.name);
+    } else {
+      if (extraFiles.length === 0) { statusEl.textContent = 'Pick the image parts too (folder or multi-select).'; return; }
+      const xmlText = await mainFile.text();
+      const { folders: newFolders, entities: newEntities } = parseSCML(xmlText);
+      const { images: newImages, missing } = await buildImageMap(newFolders, extraFiles);
+      loadProject(newFolders, newEntities, newImages, mainFile.name, true);
+      result = { missing };
+    }
+    currentProjectLabel = mainFile.name;
+    imagesDirty = true;
+    scheduleAutosave();
+    const missing = result && result.missing ? result.missing : [];
     statusEl.textContent = missing.length
-      ? `Loaded, but ${missing.length} image(s) not found: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`
-      : `Loaded ${scmlFile.name} — all images matched.`;
-    toast('Project loaded.');
+      ? `Loaded, but ${missing.length} image(s)/region(s) not found: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`
+      : `Loaded ${mainFile.name}.`;
+    toast('Project loaded — it will survive reloads until you reset to built-in.');
   } catch (err) {
+    console.error(err);
     statusEl.textContent = 'Failed to load: ' + err.message;
   }
 });
 
 document.getElementById('resetProjectBtn').addEventListener('click', () => {
-  loadProject(DEFAULT_DATA.folders, DEFAULT_DATA.entities, DEFAULT_DATA.images, 'built-in Explorer', false);
+  // Deep-clone the pristine built-in data -- `entities` may alias
+  // DEFAULT_DATA.entities from boot, so handing out the originals again
+  // after a session of edits could hand out edited objects.
+  loadProject(DEFAULT_DATA.folders, JSON.parse(JSON.stringify(DEFAULT_DATA.entities)), DEFAULT_DATA.images, 'built-in Explorer', false);
+  currentProjectLabel = '';
+  idbClear();
+  try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) {}
+  persistDirty = false; imagesDirty = false;
   document.getElementById('loadStatus').textContent = '';
-  toast('Reset to built-in Explorer data.');
+  toast('Reset to built-in Explorer data (persisted state cleared).');
 });
 
 status.textContent = `${entities.length} entities · ${Object.keys(images).length} images loaded`;

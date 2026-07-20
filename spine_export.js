@@ -460,7 +460,15 @@ function spineBuildAnimation(entity, entityIdx, rig, setup, anim) {
 // ---------- texture packing: every project PNG onto 4096-max pages ----------
 // Async because the app loads images lazily -- any not yet decoded must be
 // awaited or they'd silently drop out of the sheet.
-async function spinePackAtlas(baseName) {
+//
+// `scale` shrinks the PACKED pixels only (bounds in the atlas match the
+// shrunken size); attachment width/height stay at the source dimensions,
+// so sprites render at exactly the same world size, just from fewer
+// texels. This project's source art is ~33 megapixels of almost entirely
+// opaque pixels (trimming transparent margins would reclaim just 2%), so
+// resolution is the one lever that meaningfully shrinks the pages:
+// 100% -> three 4096 pages, 50% -> one, 25% -> a single 2048 page.
+async function spinePackAtlas(baseName, scale = 1) {
   const items = [];
   for (const folderId of Object.keys(folders)) {
     for (const fileId of Object.keys(folders[folderId].files)) {
@@ -475,7 +483,12 @@ async function spinePackAtlas(baseName) {
         });
       }
       if (!img.naturalWidth) continue; // genuinely failed to load
-      items.push({ folderId, fileId, name: spineRegionName(folderId, fileId), w: Math.round(finfo.width), h: Math.round(finfo.height), img });
+      items.push({
+        folderId, fileId, name: spineRegionName(folderId, fileId),
+        w: Math.max(1, Math.round(finfo.width * scale)),
+        h: Math.max(1, Math.round(finfo.height * scale)),
+        img,
+      });
     }
   }
   items.sort((a, b) => b.h - a.h || b.w - a.w);
@@ -654,7 +667,8 @@ async function buildSpineExport(opts = {}) {
     animations: animationsJson,
   };
 
-  const pack = await spinePackAtlas(baseName);
+  const atlasScale = [1, 0.5, 0.25].includes(opts.atlasScale) ? opts.atlasScale : 1;
+  const pack = await spinePackAtlas(baseName, atlasScale);
   return { json, atlasText: pack.atlasText, pages: pack.pages, baseName, version, warnings, regionCount: pack.regionCount };
 }
 
@@ -678,6 +692,7 @@ async function buildSpineExport(opts = {}) {
       const result = await buildSpineExport({
         version: document.getElementById('spineVersion').value,
         baseName: document.getElementById('spineBaseName').value,
+        atlasScale: parseFloat(document.getElementById('spineAtlasScale').value) || 1,
       });
       const files = [
         { name: result.baseName + '.json', blob: new Blob([JSON.stringify(result.json, null, 1)], { type: 'application/json' }) },
@@ -703,3 +718,384 @@ async function buildSpineExport(opts = {}) {
     }
   });
 })();
+
+// ============================================================
+// ---------- Spine 4.x IMPORT: skeleton .json + .atlas + page PNGs ----------
+// Converts a Spine project into the editor's internal SCML-shaped model so
+// "the editor should not care" where a project came from. Coverage: bones,
+// slots with region attachments (default skin), rotate/translate/scale
+// timelines (linear, stepped, and bezier curves -- evaluated exactly),
+// attachment (image/cast) keys, slot alpha, and drawOrder keys. Meshes,
+// IK/physics constraints, and extra skins have no SCML counterpart and are
+// ignored (a warning lists what was skipped).
+//
+// The transform-inheritance caveat from the export applies in reverse:
+// Spine composes full affine matrices down a chain, Spriter composes
+// angle/scale component-wise. For rigs that don't combine non-uniform
+// scale with rotated children (which includes everything this editor
+// exports -- flat rigs are immune), the two agree.
+
+function spineAtlasParse(atlasText) {
+  const pages = [];
+  let page = null, region = null;
+  for (const rawLine of atlasText.split(/\r\n|\r|\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) { page = null; region = null; continue; }
+    const m = line.trim().match(/^([\w]+):\s*(.*)$/);
+    if (!page) {
+      page = { name: line.trim(), regions: [], width: 0, height: 0 };
+      pages.push(page);
+      region = null;
+      continue;
+    }
+    if (m && (region === null || ['bounds', 'offsets', 'rotate', 'index', 'xy', 'size', 'orig', 'offset'].includes(m[1])) ) {
+      const key = m[1], vals = m[2].split(',').map(s => s.trim());
+      if (region === null) {
+        // page-level field
+        if (key === 'size') { page.width = parseInt(vals[0]); page.height = parseInt(vals[1]); }
+        // other page fields ignored
+        continue;
+      }
+      if (key === 'bounds') { region.x = +vals[0]; region.y = +vals[1]; region.w = +vals[2]; region.h = +vals[3]; }
+      else if (key === 'xy') { region.x = +vals[0]; region.y = +vals[1]; }
+      else if (key === 'size') { region.w = +vals[0]; region.h = +vals[1]; }
+      else if (key === 'rotate') { region.rotate = vals[0] === 'true' ? 90 : (vals[0] === 'false' ? 0 : parseInt(vals[0])); }
+      else if (key === 'offsets') { region.offX = +vals[0]; region.offY = +vals[1]; region.origW = +vals[2]; region.origH = +vals[3]; }
+      else if (key === 'offset') { region.offX = +vals[0]; region.offY = +vals[1]; }
+      else if (key === 'orig') { region.origW = +vals[0]; region.origH = +vals[1]; }
+      continue;
+    }
+    // a non-field line while a page is open = a new region name
+    region = { name: line.trim(), x: 0, y: 0, w: 0, h: 0, rotate: 0, offX: 0, offY: 0, origW: 0, origH: 0, page };
+    page.regions.push(region);
+  }
+  const regions = [];
+  for (const p of pages) for (const r of p.regions) { if (!r.origW) { r.origW = r.w; r.origH = r.h; } regions.push(r); }
+  return { pages, regions };
+}
+
+// Evaluate a spine timeline channel (array of keys with value fields) at
+// time t. `fields` names the value properties (e.g. ['value'] for rotate,
+// ['x','y'] for translate). Bezier curves are stored on the EARLIER key as
+// 4 numbers per field in absolute time/value space; solve time->s by
+// bisection (the time polynomial is monotonic).
+function spineEvalChannel(keys, fields, defaults, t) {
+  if (!keys || !keys.length) return defaults.slice();
+  let i = keys.length - 1;
+  for (let k = 0; k < keys.length; k++) { if ((keys[k].time || 0) <= t + 1e-9) i = k; else break; }
+  if ((keys[0].time || 0) > t + 1e-9) i = -1;
+  if (i < 0) return fields.map((f, fi) => keys[0][f] !== undefined ? keys[0][f] : defaults[fi]);
+  const a = keys[i], b = keys[i + 1];
+  const av = fields.map((f, fi) => a[f] !== undefined ? a[f] : defaults[fi]);
+  if (!b) return av;
+  const bv = fields.map((f, fi) => b[f] !== undefined ? b[f] : defaults[fi]);
+  const t0 = a.time || 0, t1 = b.time || 0;
+  if (t1 <= t0) return bv;
+  if (a.curve === 'stepped') return av;
+  const f = (t - t0) / (t1 - t0);
+  if (Array.isArray(a.curve)) {
+    return fields.map((_, fi) => {
+      const c = a.curve.slice(fi * 4, fi * 4 + 4);
+      if (c.length < 4) return av[fi] + (bv[fi] - av[fi]) * f;
+      // cubic bezier through (t0,av) (c0,c1) (c2,c3) (t1,bv); find s with time(s)=t
+      const bez = (p0, p1, p2, p3, s) => {
+        const u = 1 - s;
+        return u * u * u * p0 + 3 * u * u * s * p1 + 3 * u * s * s * p2 + s * s * s * p3;
+      };
+      let lo = 0, hi = 1, s = f;
+      for (let it = 0; it < 40; it++) {
+        s = (lo + hi) / 2;
+        const tv = bez(t0, c[0], c[2], t1, s);
+        if (tv < t) lo = s; else hi = s;
+      }
+      return bez(av[fi], c[1], c[3], bv[fi], s);
+    });
+  }
+  return fields.map((_, fi) => av[fi] + (bv[fi] - av[fi]) * f);
+}
+
+async function importSpineProject(json, atlasText, extraFiles, label) {
+  const missing = [];
+  const warnings = [];
+
+  // ---- atlas pages -> per-region data-URL images
+  const atlas = spineAtlasParse(atlasText);
+  const pageImages = {};
+  for (const p of atlas.pages) {
+    const f = extraFiles.find(f => f.name === p.name || f.name.endsWith('/' + p.name));
+    if (!f) { missing.push('page ' + p.name); continue; }
+    const url = await readFileAsDataURL(f);
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('bad page image ' + p.name)); img.src = url; });
+    pageImages[p.name] = img;
+  }
+
+  // region name -> {folderName, fileBase}: "body/leg_upper" -> folder "body"
+  function splitRegionName(name) {
+    const idx = name.lastIndexOf('/');
+    return idx === -1 ? { folderName: 'images', base: name } : { folderName: name.slice(0, idx), base: name.slice(idx + 1) };
+  }
+
+  const newFolders = {};
+  const newImages = {};
+  const folderIdByName = new Map();
+  const fileRefByRegion = new Map(); // region name -> {folderId, fileId}
+  function folderIdFor(name) {
+    if (folderIdByName.has(name)) return folderIdByName.get(name);
+    const fid = String(folderIdByName.size);
+    folderIdByName.set(name, fid);
+    newFolders[fid] = { name, files: {} };
+    return fid;
+  }
+
+  // pivots come from the skin attachments below; regions are cut here
+  for (const r of atlas.regions) {
+    const img = pageImages[r.page.name];
+    if (!img) { continue; }
+    const cw = r.rotate === 90 ? r.h : r.w, ch = r.rotate === 90 ? r.w : r.h;
+    const canvas = document.createElement('canvas');
+    canvas.width = r.origW || r.w; canvas.height = r.origH || r.h;
+    const cx = canvas.getContext('2d');
+    if (r.rotate === 90) {
+      // libgdx-style 90° packing: stored rotated CW; un-rotate
+      cx.save();
+      cx.translate(r.offX + r.w / 2, (canvas.height - r.origH) + r.offY + r.h / 2);
+      cx.rotate(-Math.PI / 2);
+      cx.drawImage(img, r.x, r.y, cw, ch, -r.h / 2, -r.w / 2, cw, ch);
+      cx.restore();
+      warnings.push(`region ${r.name} is 90°-rotated in the atlas -- un-rotated on import, verify it visually`);
+    } else {
+      // offY is measured from the BOTTOM of the original image in libgdx
+      const destY = (canvas.height - r.h) - r.offY;
+      cx.drawImage(img, r.x, r.y, r.w, r.h, r.offX, destY, r.w, r.h);
+    }
+    const { folderName, base } = splitRegionName(r.name);
+    const fid = folderIdFor(folderName);
+    const fileId = String(Object.keys(newFolders[fid].files).length);
+    newFolders[fid].files[fileId] = {
+      name: (folderName ? folderName + '/' : '') + base + '.png',
+      width: canvas.width, height: canvas.height,
+      pivot_x: 0, pivot_y: 1, // corrected from attachments below
+    };
+    newImages[fid + '_' + fileId] = canvas.toDataURL('image/png');
+    fileRefByRegion.set(r.name, { folderId: fid, fileId });
+  }
+
+  // ---- skeleton structure
+  const bonesArr = json.bones || [];
+  const boneIndexByName = new Map(bonesArr.map((b, i) => [b.name, i]));
+  const slots = json.slots || [];
+  const skins = json.skins || [];
+  const skinObj = Array.isArray(skins) ? (skins.find(s => s.name === 'default') || skins[0]) : { attachments: skins };
+  const attachments = (skinObj && skinObj.attachments) || {};
+  if ((Array.isArray(skins) ? skins.length : Object.keys(skins).length) > 1) warnings.push('multiple skins found -- only the default/first skin is imported');
+
+  // attachment -> region + pivot; also fix the file pivot from the
+  // attachment's center offset (inverse of the export mapping)
+  const attachmentInfo = new Map(); // slotName|attName -> {folderId, fileId}
+  for (const slotName of Object.keys(attachments)) {
+    for (const attName of Object.keys(attachments[slotName])) {
+      const att = attachments[slotName][attName];
+      const type = att.type || 'region';
+      if (type !== 'region') { warnings.push(`slot ${slotName}: ${type} attachment "${attName}" skipped (only region attachments import)`); continue; }
+      const regionName = att.path || att.name || attName;
+      const ref = fileRefByRegion.get(regionName);
+      if (!ref) { missing.push('region ' + regionName); continue; }
+      const finfo = newFolders[ref.folderId].files[ref.fileId];
+      const w = att.width || finfo.width, h = att.height || finfo.height;
+      finfo.pivot_x = 0.5 - (att.x || 0) / w;
+      finfo.pivot_y = 0.5 - (att.y || 0) / h;
+      if (att.rotation) warnings.push(`slot ${slotName}: attachment "${attName}" has rotation ${att.rotation} -- not representable per-image in SCML, ignored`);
+      if ((att.scaleX && att.scaleX !== 1) || (att.scaleY && att.scaleY !== 1)) warnings.push(`slot ${slotName}: attachment "${attName}" has scale -- ignored`);
+      attachmentInfo.set(slotName + '|' + attName, ref);
+    }
+  }
+  for (const key of ['ik', 'transform', 'path', 'physics']) {
+    if (json[key] && json[key].length) warnings.push(`${json[key].length} ${key} constraint(s) skipped (no SCML counterpart)`);
+  }
+
+  // SCML ids: bones 0..n-1 in spine order (parents always precede children
+  // in spine files); objects = slots in draw-order (slot array order).
+  const boneSetup = bonesArr.map(b => ({
+    x: b.x || 0, y: b.y || 0, angle: b.rotation || 0,
+    scaleX: b.scaleX === undefined ? 1 : b.scaleX, scaleY: b.scaleY === undefined ? 1 : b.scaleY,
+  }));
+
+  function norm360(a) { return ((a % 360) + 360) % 360; }
+
+  // ---- animations
+  const animations = [];
+  const animsSrc = json.animations || {};
+  for (const [animName, anim] of Object.entries(animsSrc)) {
+    let maxT = 0;
+    JSON.stringify(anim, (k, v) => { if (k === 'time' && typeof v === 'number') maxT = Math.max(maxT, v); return v; });
+    const lengthMs = Math.max(1, Math.round(maxT * 1000)) || 1000;
+
+    const timelines = {};
+    let tlId = 0;
+    const boneTimelineId = new Map();   // bone index -> timeline id
+    const slotTimelineId = new Map();   // slot name -> timeline id
+
+    // --- bone timelines: keys at the union of the bone's channel key times
+    for (let bi = 0; bi < bonesArr.length; bi++) {
+      const bname = bonesArr[bi].name;
+      const bt = (anim.bones && anim.bones[bname]) || {};
+      const times = new Set([0]);
+      for (const ch of ['rotate', 'translate', 'scale', 'translatex', 'translatey', 'scalex', 'scaley']) {
+        for (const k of bt[ch] || []) times.add(Math.round((k.time || 0) * 100000) / 100000);
+      }
+      const sorted = [...times].sort((a, b) => a - b);
+      const setup = boneSetup[bi];
+      const keys = sorted.map((tS, idx) => {
+        const [rot] = spineEvalChannel(bt.rotate, ['value'], [0], tS);
+        const [tx, ty] = spineEvalChannel(bt.translate, ['x', 'y'], [0, 0], tS);
+        const [sx, sy] = spineEvalChannel(bt.scale, ['x', 'y'], [1, 1], tS);
+        return {
+          id: String(idx), time: Math.round(tS * 1000),
+          spin: 1, curve_type: '0', c1: 0, c2: 0,
+          transform: {
+            x: setup.x + tx, y: setup.y + ty,
+            angle: norm360(setup.angle + rot),
+            scaleX: setup.scaleX * sx, scaleY: setup.scaleY * sy,
+            alpha: 1,
+          },
+          folder: null, file: null,
+          _rawAngle: setup.angle + rot, // continuous value for spin derivation
+        };
+      });
+      // spin from the continuous rotation values, then stepped segments
+      for (let i = 0; i < keys.length - 1; i++) {
+        const d = keys[i + 1]._rawAngle - keys[i]._rawAngle;
+        keys[i].spin = d >= 0 ? 1 : -1;
+        if (Math.abs(d) < 1e-6) keys[i].spin = 0;
+        // a rotate key that is stepped in spine holds -- SCML equivalent is
+        // instant curve (holds EVERYTHING; spine stepped is per-channel, the
+        // difference only matters when one channel steps and another
+        // doesn't, which our own exports never produce)
+        const rk = (bt.rotate || []).find(k => Math.abs((k.time || 0) - keys[i].time / 1000) < 1e-6);
+        if (rk && rk.curve === 'stepped') keys[i].curve_type = '1';
+      }
+      keys.forEach(k => delete k._rawAngle);
+      const id = String(tlId++);
+      timelines[id] = { id, obj: null, name: bname, object_type: 'bone', keys };
+      boneTimelineId.set(bi, id);
+    }
+
+    // --- slot timelines: transform rides the slot's bone; keys carry the
+    // image (attachment) and alpha
+    const slotState = new Map(); // slot name -> {attachment events, alphaKeys}
+    for (const slot of slots) {
+      const st = (anim.slots && anim.slots[slot.name]) || {};
+      const attKeys = st.attachment || [];
+      const alphaKeys = st.alpha || [];
+      if (st.rgba) warnings.push(`slot ${slot.name}: rgba color timeline imported as alpha only`);
+      const rgbaKeys = st.rgba || [];
+      const times = new Set([0]);
+      for (const k of attKeys) times.add(k.time || 0);
+      for (const k of alphaKeys) times.add(k.time || 0);
+      for (const k of rgbaKeys) times.add(k.time || 0);
+      const sorted = [...times].sort((a, b) => a - b);
+      const setupAtt = slot.attachment || null;
+      function attachmentAt(tS) {
+        let cur = setupAtt;
+        for (const k of attKeys) { if ((k.time || 0) <= tS + 1e-9) cur = k.name; else break; }
+        return cur;
+      }
+      function alphaAt(tS) {
+        if (alphaKeys.length) return spineEvalChannel(alphaKeys, ['value'], [1], tS)[0];
+        if (rgbaKeys.length) {
+          let cur = 'ffffffff';
+          for (const k of rgbaKeys) { if ((k.time || 0) <= tS + 1e-9) cur = k.color || cur; else break; }
+          return cur.length >= 8 ? parseInt(cur.slice(6, 8), 16) / 255 : 1;
+        }
+        const c = slot.color;
+        return c && c.length >= 8 ? parseInt(c.slice(6, 8), 16) / 255 : 1;
+      }
+      const keys = sorted.map((tS, idx) => {
+        const attName = attachmentAt(tS);
+        const ref = attName ? attachmentInfo.get(slot.name + '|' + attName) : null;
+        return {
+          id: String(idx), time: Math.round(tS * 1000),
+          spin: 1, curve_type: '0', c1: 0, c2: 0,
+          transform: { x: 0, y: 0, angle: 0, scaleX: 1, scaleY: 1, alpha: alphaAt(tS) },
+          folder: ref ? ref.folderId : null, file: ref ? ref.fileId : null,
+          _present: !!ref,
+        };
+      });
+      const id = String(tlId++);
+      timelines[id] = { id, obj: null, name: slot.name, object_type: 'sprite', keys };
+      slotTimelineId.set(slot.name, id);
+      slotState.set(slot.name, { keys });
+    }
+
+    // --- mainline: one key at EVERY timeline key time (plus drawOrder key
+    // times). This is how genuine Spriter exports are built, and it's not
+    // optional: SCML playback anchors interpolation at the mainline ref's
+    // `key` index and can only blend to the NEXT key -- a sparse mainline
+    // would freeze every track at its anchor's next key.
+    const mainTimes = new Set([0]);
+    for (const tl of Object.values(timelines)) for (const k of tl.keys) mainTimes.add(k.time);
+    for (const k of anim.drawOrder || []) mainTimes.add(Math.round((k.time || 0) * 1000));
+    const mainSorted = [...mainTimes].sort((a, b) => a - b);
+
+    // full slot order at time t from the drawOrder timeline (spine offsets
+    // algorithm, reconstructed)
+    function slotOrderAt(tMs) {
+      let key = null;
+      for (const k of anim.drawOrder || []) { if (Math.round((k.time || 0) * 1000) <= tMs) key = k; else break; }
+      const n = slots.length;
+      if (!key || !key.offsets) return slots.map((s, i) => i);
+      const order = new Array(n).fill(-1);
+      const unchanged = [];
+      let orig = 0;
+      for (const off of key.offsets) {
+        const idx = slots.findIndex(s => s.name === off.slot);
+        while (orig !== idx) unchanged.push(orig++);
+        order[orig + off.offset] = orig; orig++;
+      }
+      while (orig < n) unchanged.push(orig++);
+      let ui = unchanged.length;
+      for (let i = n - 1; i >= 0; i--) if (order[i] === -1) order[i] = unchanged[--ui];
+      return order;
+    }
+
+    const mainline = mainSorted.map((tMs, mkIdx) => {
+      const mk = { id: String(mkIdx), time: tMs, bone_refs: [], object_refs: [] };
+      for (let bi = 0; bi < bonesArr.length; bi++) {
+        const tl = timelines[boneTimelineId.get(bi)];
+        let anchor = 0;
+        for (let i = 0; i < tl.keys.length; i++) if (tl.keys[i].time <= tMs) anchor = i;
+        const parentName = bonesArr[bi].parent;
+        mk.bone_refs.push({
+          id: String(bi),
+          parent: parentName === undefined || parentName === null ? null : String(boneIndexByName.get(parentName)),
+          timeline: tl.id, key: String(anchor),
+        });
+      }
+      const order = slotOrderAt(tMs);
+      let z = 0, objId = 0;
+      for (const slotIdx of order) {
+        const slot = slots[slotIdx];
+        const tl = timelines[slotTimelineId.get(slot.name)];
+        let anchor = 0;
+        for (let i = 0; i < tl.keys.length; i++) if (tl.keys[i].time <= tMs) anchor = i;
+        if (!tl.keys[anchor]._present) { continue; } // hidden at this moment -> not in the cast
+        mk.object_refs.push({
+          id: String(objId++),
+          parent: slot.bone !== undefined ? String(boneIndexByName.get(slot.bone)) : null,
+          timeline: tl.id, key: String(anchor), z_index: z++,
+        });
+      }
+      return mk;
+    });
+
+    for (const tl of Object.values(timelines)) for (const k of tl.keys) delete k._present;
+    animations.push({ id: String(animations.length), name: animName, length: lengthMs, interval: 100, looping: true, mainline, timelines });
+  }
+
+  const entityName = (label || 'spine').replace(/\.[^.]*$/, '');
+  const newEntities = [{ id: '0', name: entityName, bones: bonesArr.map(b => b.name), animations }];
+  loadProject(newFolders, newEntities, newImages, label, true);
+  if (warnings.length) console.warn('[spine import]', warnings);
+  return { missing, warnings };
+}
