@@ -57,9 +57,10 @@ store the part's **local** transform — x, y, angle, scale_x, scale_y —
 *relative to its parent*, not relative to the stage. Each key also carries:
 
 - **`curve_type`** — how this key blends into the *next* key on the same
-  timeline: linear (steady), quadratic/cubic (eased), or instant (hold —
-  snap with no blend). This is exactly what the diamond/circle/flat-bar
-  shapes on the Timeline panel mean; see the Legend button there.
+  timeline: linear (steady), quadratic/cubic (eased), bezier (a CSS-style
+  `cubic-bezier(c1,c2,c3,c4)` easing curve), or instant (hold — snap with
+  no blend). This is exactly what the diamond/circle/flat-bar shapes on
+  the Timeline panel mean; see the Legend button there.
 - **`spin`** — which rotational direction to interpolate angle in (+1
   clockwise, -1 counter-clockwise, 0 don't rotate at all), so a hand
   spinning through 350° doesn't accidentally interpolate the "short way"

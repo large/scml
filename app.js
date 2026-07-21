@@ -439,11 +439,27 @@ function easeQuadratic(a, b, c, t) { return easeLinear(easeLinear(a, b, t), ease
 function easeCubic(a, b, c, d, t) { return easeLinear(easeQuadratic(a, b, c, t), easeQuadratic(b, c, d, t), t); }
 
 // Computes the eased progress "t" between keyA and its next key, honoring curve_type.
+// CSS-style cubic bezier easing with control points (x1,y1)/(x2,y2): solve
+// s for x(s)=t by bisection (x is monotonic for valid curves), return y(s).
+// SCML curve_type 4 ("bezier") stores these as c1..c4.
+function cubicBezierEase(x1, y1, x2, y2, t) {
+  let lo = 0, hi = 1, s = t;
+  for (let i = 0; i < 24; i++) {
+    s = (lo + hi) / 2;
+    const u = 1 - s;
+    const x = 3 * u * u * s * x1 + 3 * u * s * s * x2 + s * s * s;
+    if (x < t) lo = s; else hi = s;
+  }
+  const u = 1 - s;
+  return 3 * u * u * s * y1 + 3 * u * s * s * y2 + s * s * s;
+}
+
 function curveT(keyA, rawT) {
   const type = String(keyA.curve_type === undefined ? '0' : keyA.curve_type);
   if (type === '1' || type === 'instant' || type === 'INSTANT') return 0;
   if (type === '2' || type === 'quadratic' || type === 'QUADRATIC') return easeQuadratic(0, keyA.c1 || 0, 1, rawT);
   if (type === '3' || type === 'cubic' || type === 'CUBIC') return easeCubic(0, keyA.c1 || 0, keyA.c2 || 0, 1, rawT);
+  if (type === '4' || type === 'bezier' || type === 'BEZIER') return cubicBezierEase(keyA.c1 || 0, keyA.c2 || 0, keyA.c3 || 0, keyA.c4 || 0, rawT);
   return rawT; // linear (default, type 0)
 }
 
@@ -789,8 +805,11 @@ function paintSprites(pctx, objects, viewScale, originX, originY, opts = {}, ani
     const isActive = !dimInactive || (opts.activeObjectIds ? opts.activeObjectIds.has(obj.id) : true);
     const dimAlpha = isActive ? 1 : 0.25;
     const ownAlpha = wtx.alpha === undefined ? 1 : wtx.alpha;
+    // Peek mode: everything except the selected item drops to 30% while
+    // editing. opts.peekSelKey is only ever set by the live canvas path.
+    const peekAlpha = (opts.peekSelKey && opts.peekSelKey !== 'objects:' + obj.id) ? 0.3 : 1;
     pctx.save();
-    pctx.globalAlpha = dimAlpha * ownAlpha;
+    pctx.globalAlpha = dimAlpha * ownAlpha * peekAlpha;
     pctx.setTransform(ax, ay, bx, by, ex, ey);
     // Skew is composed as a *separate* transform on top of the already-verified
     // rotation/scale matrix above, rather than folded into ax/bx by hand -- that's
@@ -875,9 +894,15 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
   for (const br of _mkey.bone_refs) _activeBones.add(br.id);
   for (const orf of _mkey.object_refs) _activeObjects.add(orf.id);
 
+  // Peek mode (View menu): while editing with something selected, everything
+  // that is NOT the selected item is drawn semi-transparent so the selection
+  // stands out. Canvas-only — the export paths never pass peekSelKey.
+  const _peekEl = document.getElementById('peekMode');
+  const _peekKey = (editMode && _peekEl && _peekEl.checked && selected) ? selKey() : null;
+
   if (document.getElementById('showSprites').checked) {
     const visibleObjects = objects.filter(o => trackVisible['objects:' + o.id] !== false);
-    lastObjectHits = paintSprites(ctx, visibleObjects, VIEW_SCALE, ORIGIN_X + VIEW_OFFSET_X, ORIGIN_Y + VIEW_OFFSET_Y, { recordHits: true, highlightSelected: true, dimInactive: true, activeObjectIds: _activeObjects }, anim.name);
+    lastObjectHits = paintSprites(ctx, visibleObjects, VIEW_SCALE, ORIGIN_X + VIEW_OFFSET_X, ORIGIN_Y + VIEW_OFFSET_Y, { recordHits: true, highlightSelected: true, dimInactive: true, activeObjectIds: _activeObjects, peekSelKey: _peekKey }, anim.name);
   } else {
     lastObjectHits = [];
   }
@@ -909,9 +934,11 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
       // respected trackVisible here, so a "hidden" bone still showed on canvas).
       const isVisible = trackVisible['bones:' + br.id] !== false;
       if (!isVisible) continue;
-      // Dim bones (and their lines/labels) that aren't active at this frame
+      // Dim bones (and their lines/labels) that aren't active at this frame,
+      // and everything non-selected when peek mode is on.
+      const peekDim = _peekKey !== null && _peekKey !== 'bones:' + br.id;
       ctx.save();
-      ctx.globalAlpha = isActive ? 1 : 0.25;
+      ctx.globalAlpha = (isActive ? 1 : 0.25) * (peekDim ? 0.3 : 1);
       if (isSel) {
         // Glow under selected bone point
         ctx.save();
@@ -933,7 +960,7 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
       }
       lastBonePoints.push({ id: br.id, x: x0, y: y0 });
       if (document.getElementById('showLabels').checked) {
-        _labelPositions.push({ name: entity.bones[br.id] || br.id, x: x0, y: y0, isActive });
+        _labelPositions.push({ name: entity.bones[br.id] || br.id, x: x0, y: y0, isActive, peekDim });
       }
       ctx.restore();
     }
@@ -980,7 +1007,7 @@ function drawFrame(entityIdx, entity, anim, timeMs) {
     for (const lb of _labelPositions) {
       const sx = lb.x + offX;
       const sy = lb.y - offY;
-      ctx.globalAlpha = lb.isActive ? 0.95 : 0.35;
+      ctx.globalAlpha = (lb.isActive ? 0.95 : 0.35) * (lb.peekDim ? 0.3 : 1);
       const text = lb.name;
       const tw = ctx.measureText(text).width;
       const boxH = fontSize + padY * 2;
@@ -2273,6 +2300,17 @@ playBtn.addEventListener('click', () => {
 document.getElementById('showBones').addEventListener('change', render);
 document.getElementById('showSprites').addEventListener('change', render);
 document.getElementById('showLabels').addEventListener('change', render);
+// Peek mode: dim everything not selected while editing. Preference sticks
+// across sessions (it's a viewing habit, not project data).
+(() => {
+  const el = document.getElementById('peekMode');
+  if (!el) return;
+  try { el.checked = localStorage.getItem('scml_peek_v1') === '1'; } catch (_) {}
+  el.addEventListener('change', () => {
+    try { localStorage.setItem('scml_peek_v1', el.checked ? '1' : '0'); } catch (_) {}
+    render();
+  });
+})();
 
 
 
@@ -2955,18 +2993,55 @@ function applyFloatToolbarPin() {
   positionFloatToolbar();
 }
 
+// The docked panel's width is draggable via the handle on its left edge
+// and persisted, like the other resizable panels.
+(function initEditDockResize() {
+  const DOCK_W_KEY = 'scml_edit_dock_w_v1';
+  const dock = document.getElementById('editDock');
+  const handle = document.getElementById('rzEditDock');
+  if (!dock || !handle) return;
+  try {
+    const saved = parseInt(localStorage.getItem(DOCK_W_KEY) || '', 10);
+    if (saved >= 200 && saved <= 520) dock.style.width = saved + 'px';
+  } catch (e) {}
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = dock.offsetWidth;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev) => {
+      // handle sits on the dock's LEFT edge: dragging left widens it
+      const w = Math.max(200, Math.min(520, startW + (startX - ev.clientX)));
+      dock.style.width = w + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      handle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      try { localStorage.setItem(DOCK_W_KEY, String(dock.offsetWidth)); } catch (e) {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+})();
+
 function positionFloatToolbar() {
   const bar = document.getElementById('floatToolbar');
   const dock = document.getElementById('editDock');
+  const dockHandle = document.getElementById('rzEditDock');
   if (floatToolbarPinned) {
     // Docked: the panel shows whenever edit mode is on (with "Nothing
     // selected" until something is picked); no canvas-following at all.
     const show = editMode;
     dock.classList.toggle('show', show);
+    if (dockHandle) dockHandle.style.display = show ? 'block' : 'none';
     bar.style.display = show ? 'flex' : 'none';
     if (!editMode || !selected) floatToolbarLastSelKey = null;
     return;
   }
+  if (dockHandle) dockHandle.style.display = 'none';
   if (!editMode || !selected || !lastPivotById[selKey()]) { bar.style.display = 'none'; floatToolbarLastSelKey = null; return; }
   bar.style.display = 'flex';
   if (selKey() !== floatToolbarLastSelKey) {
@@ -3827,7 +3902,7 @@ function parseSCML(xmlText) {
         mainline: [], timelines: {}
       };
       const mainlineEl = directChildren(anim, 'mainline')[0];
-      for (const key of directChildren(mainlineEl, 'key')) {
+      for (const key of mainlineEl ? directChildren(mainlineEl, 'key') : []) {
         const k = { id: key.getAttribute('id'), time: parseFloat(key.getAttribute('time') || 0), bone_refs: [], object_refs: [] };
         for (const br of directChildren(key, 'bone_ref')) {
           k.bone_refs.push({ id: br.getAttribute('id'), parent: br.getAttribute('parent'), timeline: br.getAttribute('timeline'), key: br.getAttribute('key') });
@@ -3837,6 +3912,10 @@ function parseSCML(xmlText) {
         }
         a.mainline.push(k);
       }
+      // A file can omit <mainline> entirely (or leave it empty). Playback
+      // anchors on mainline keys, so give such an animation one empty key
+      // rather than letting the renderer crash if the user selects it.
+      if (a.mainline.length === 0) a.mainline.push({ id: '0', time: 0, bone_refs: [], object_refs: [] });
       for (const tl of directChildren(anim, 'timeline')) {
         const tlid = tl.getAttribute('id');
         const tobj = { id: tlid, obj: tl.getAttribute('obj'), name: tl.getAttribute('name'), object_type: tl.getAttribute('object_type') || 'sprite', keys: [] };
@@ -3845,11 +3924,17 @@ function parseSCML(xmlText) {
             id: key.getAttribute('id'), time: parseFloat(key.getAttribute('time') || 0),
             spin: parseInt(key.getAttribute('spin') === null ? 1 : key.getAttribute('spin')),
             curve_type: key.getAttribute('curve_type') || '0',
-            c1: parseFloat(key.getAttribute('c1') || 0), c2: parseFloat(key.getAttribute('c2') || 0)
+            c1: parseFloat(key.getAttribute('c1') || 0), c2: parseFloat(key.getAttribute('c2') || 0),
+            // bezier curves (curve_type 4) carry FOUR control values
+            c3: parseFloat(key.getAttribute('c3') || 0), c4: parseFloat(key.getAttribute('c4') || 0)
           };
           const boneEl = directChildren(key, 'bone')[0];
           const objEl = directChildren(key, 'object')[0];
           const el = boneEl || objEl;
+          // Real Spriter files can contain keys with neither a <bone> nor an
+          // <object> child (meta/tag-only keys) -- skip them instead of
+          // crashing the whole load on el.getAttribute.
+          if (!el) continue;
           kk.transform = {
             x: parseFloat(el.getAttribute('x') || 0), y: parseFloat(el.getAttribute('y') || 0),
             angle: parseFloat(el.getAttribute('angle') || 0),
@@ -3958,7 +4043,11 @@ document.getElementById('createAnimBtn').addEventListener('click', () => {
 
 document.getElementById('loadProjectBtn').addEventListener('click', async () => {
   const mainFile = document.getElementById('loadScmlFile').files[0];
-  const extraFiles = [...(document.getElementById('loadImagesFiles').files || [])];
+  const extra2 = document.getElementById('loadImagesFiles2');
+  const extraFiles = [
+    ...(document.getElementById('loadImagesFiles').files || []),
+    ...((extra2 && extra2.files) || []),
+  ];
   const statusEl = document.getElementById('loadStatus');
   if (!mainFile) { statusEl.textContent = 'Pick a .scml or Spine .json file first.'; return; }
   try {

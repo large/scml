@@ -63,6 +63,10 @@
             <span style="display:flex;align-items:center;gap:6px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.3 8.7 8.7 21.3a2.4 2.4 0 0 1-3.4 0L2.7 18.7a2.4 2.4 0 0 1 0-3.4L15.3 2.7a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4Z"/><path d="m7.5 10.5 2 2"/><path d="m10.5 7.5 2 2"/><path d="m13.5 4.5 2 2"/><path d="m4.5 13.5 2 2"/></svg> Size box</span>
             <input type="checkbox" id="showSizeBox" checked>
           </label>
+          <label class="toggle-row" title="While editing with something selected, everything else is drawn semi-transparent so the selection stands out">
+            <span style="display:flex;align-items:center;gap:6px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Peek (edit)</span>
+            <input type="checkbox" id="peekMode">
+          </label>
           <div class="toggle-row" style="cursor:default;">
             <span style="display:flex;align-items:center;gap:6px;">Backdrop</span>
             <input type="color" id="backdropColor" value="#141414" style="width:28px;height:22px;padding:1px;border-radius:3px;background:transparent;border:1px solid var(--border);">
@@ -169,6 +173,7 @@
             <div class="ft-resize-handle" title="Drag to resize"></div>
           </div>
         </div>
+        <div class="h-resize-handle" id="rzEditDock" title="Drag to resize the edit panel" style="display:none;"></div>
         <div id="editDock"></div>
         </div>
         <div id="previewControls">
@@ -400,10 +405,14 @@
         <input type="file" id="loadScmlFile" accept=".scml,.json,text/xml,application/xml,application/json">
       </div>
       <div class="field-row" style="flex-direction:column;align-items:stretch;gap:4px;">
-        <span class="label">The rest of it (folder or multi-select): PNG parts — for Spine, the .atlas + its page PNGs</span>
+        <span class="label">The rest of it, pick a FOLDER: PNG parts — for Spine, the .atlas + its page PNGs</span>
         <input type="file" id="loadImagesFiles" multiple webkitdirectory directory>
       </div>
-      <div class="hint" id="imageFolderHint">Some browsers don't support picking a whole folder — if so, this will just let you multi-select files instead; that's fine, matching is done by filename. Loaded projects are persisted — a reload continues where you left off.</div>
+      <div class="field-row" style="flex-direction:column;align-items:stretch;gap:4px;">
+        <span class="label">…or multi-select the FILES here instead (either picker works; both are combined)</span>
+        <input type="file" id="loadImagesFiles2" multiple>
+      </div>
+      <div class="hint" id="imageFolderHint">Matching is done by filename, so subfolder structure doesn't have to match exactly. Loaded projects are persisted — a reload continues where you left off.</div>
       <div id="loadStatus" class="hint"></div>
       <div class="credit">Bone composition cross-checked against the SpriterDotNet reference implementation.</div>
     </div>
